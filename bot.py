@@ -50,20 +50,6 @@ def _kvd_input_from_text(text: str) -> dict:
     return {"headless": headless, "write_file": write_file}
 
 
-def _looks_like_tool_request(text: str) -> bool:
-    t = (text or "").strip().lower()
-    if not t:
-        return False
-    if _looks_like_kvd_command(t):
-        return True
-    return "kvd" in t and any(w in t for w in ("hämta", "scrape", "skrapa", "annonser", "listningar"))
-
-
-def _is_smalltalk(text: str) -> bool:
-    t = (text or "").strip().lower()
-    return t in {"hej", "tja", "hallå", "hello", "hi", "hur mår du", "vad kan du", "hjälp"}
-
-
 def split_telegram(text: str, chunk_size: int = 3500):
     for i in range(0, len(text), chunk_size):
         yield text[i : i + chunk_size]
@@ -149,21 +135,6 @@ def lm_chat(messages: list[dict], temperature: float = 0.0) -> str:
     return r.json()["choices"][0]["message"]["content"]
 
 
-def chat_reply(user_text: str) -> str:
-    messages = [
-        {
-            "role": "system",
-            "content": (
-                "Du är en hjälpsam lokal assistent i Telegram. "
-                "Svara naturligt och kortfattat på vanlig chatt. "
-                "Föreslå verktyg endast om användaren tydligt vill köra dem."
-            ),
-        },
-        {"role": "user", "content": user_text},
-    ]
-    return lm_chat(messages, temperature=0.3)
-
-
 def plan_next_action(*, user_text: str, tools: list[dict], session: dict) -> dict:
     tools_index = tool_index_for_prompt(tools)
     vars_summary = {k: type(v).__name__ for k, v in session.get("vars", {}).items()}
@@ -183,6 +154,7 @@ def plan_next_action(*, user_text: str, tools: list[dict], session: dict) -> dic
         "- Svara ENDAST JSON, ingen markdown/text runtom.\n"
         "- Om user uttryckligen säger kör/run/start för ett känt verktyg, returnera action=run direkt och fråga inte om bekräftelse.\n"
         "- Undvik upprepade bekräftelsefrågor för samma mål.\n"
+        "- Svara ENDAST JSON, ingen markdown/text runtom."
     )
 
     user_payload = {
@@ -197,6 +169,62 @@ def plan_next_action(*, user_text: str, tools: list[dict], session: dict) -> dic
         {"role": "system", "content": system},
         {"role": "user", "content": _compact_json(user_payload, max_len=7000)},
     ]
+
+    last_error = None
+    for retry in range(PLAN_RETRIES + 1):
+        content = lm_chat(messages, temperature=0.0)
+        try:
+            plan = _extract_first_json_object(content)
+            action = plan.get("action")
+            if action not in ("run", "final", "ask"):
+                raise ValueError("Invalid action")
+            if action == "run":
+                if not isinstance(plan.get("tool"), str):
+                    raise ValueError("run requires tool")
+                if not isinstance(plan.get("input", {}), dict):
+                    plan["input"] = {}
+                if "save_as" in plan and not isinstance(plan.get("save_as"), str):
+                    plan.pop("save_as", None)
+                if "note" in plan and not isinstance(plan.get("note"), str):
+                    plan["note"] = ""
+            if action == "ask" and not isinstance(plan.get("question"), str):
+                raise ValueError("ask requires question")
+            if action == "final" and not isinstance(plan.get("answer"), str):
+                raise ValueError("final requires answer")
+            return plan
+        except Exception as e:
+            last_error = str(e)
+            messages.append({"role": "assistant", "content": content})
+            messages.append(
+                {
+                    "role": "user",
+                    "content": "Your previous output was invalid JSON or schema. Return ONLY valid JSON using the required contract.",
+                }
+            )
+            if retry >= PLAN_RETRIES:
+                break
+
+    return {"action": "ask", "question": f"Planner JSON-fel: {last_error}. Kan du omformulera uppgiften?", "choices": []}
+
+
+def call_runner(payload: dict) -> dict:
+    if not RUNNER_PATH.exists():
+        return {"ok": False, "tool": payload.get("tool"), "error": {"type": "runner_missing", "message": f"runner.py hittades inte: {RUNNER_PATH}"}}
+
+    proc = subprocess.run(
+        [sys.executable, str(RUNNER_PATH)],
+        input=json.dumps(payload, ensure_ascii=False),
+        text=True,
+        capture_output=True,
+        timeout=240,
+    )
+
+    if proc.stdout.strip():
+        try:
+            return json.loads(proc.stdout)
+        except Exception:
+            pass
+
 
     last_error = None
     for retry in range(PLAN_RETRIES + 1):
@@ -344,18 +372,6 @@ async def on_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     session["history"].append({"role": "user", "content": text})
 
-    # Prefer normal conversation unless user clearly asks to run tools.
-    if not pending and (_is_smalltalk(text) or not _looks_like_tool_request(text)):
-        try:
-            reply = chat_reply(text)
-        except Exception as e:
-            reply = f"Fel mot LM Studio: {e}"
-        session.pop("pending", None)
-        save_session(chat_id, session)
-        for part in split_telegram(reply):
-            await update.message.reply_text(part)
-        return
-
     tools = list_tools_from_json()
 
     # Fast-path: explicit command should run directly, not ask repeatedly.
@@ -400,6 +416,15 @@ async def on_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 "question": plan.get("question", ""),
                 "ask_count": ask_count,
             }
+    for step in range(1, MAX_STEPS + 1):
+        session["step"] = step
+        save_session(chat_id, session)
+
+        plan = plan_next_action(user_text=text, tools=tools, session=session)
+        session["history"].append({"role": "assistant", "content": _compact_json(plan, 2000)})
+
+        action = plan.get("action")
+        if action == "ask":
             await update.message.reply_text(plan.get("question", "Jag behöver mer info."))
             save_session(chat_id, session)
             return

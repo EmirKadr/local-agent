@@ -1,0 +1,6 @@
+{
+  "run_at": "2026-02-20T15:48:47.529468+01:00",
+  "source": "kvd.se",
+  "query_url": "https://www.kvd.se/begagnade-bilar?orderBy=countdown_start_at",
+  "items": []
+}

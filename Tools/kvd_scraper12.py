@@ -1,5 +1,4 @@
-"""
-Scrape Kvdbil auctions with brand and model extraction.
+"""Scrape Kvdbil auctions with brand and model extraction.
 
 This script builds on kvd_scraper10.py and includes two new fields in
 the output: `make` and `model`. Each car's title is assumed to
@@ -20,8 +19,6 @@ import argparse
 import os
 import json
 import re
-import sys
-import traceback
 from dataclasses import dataclass, asdict
 from datetime import datetime
 from typing import Iterable, List, Optional, Dict
@@ -127,6 +124,7 @@ def extract_title_and_subtitle(card: Locator) -> tuple[str, str]:
     """
     title = ""
     subtitle = ""
+    # Try robust selection based on class prefix
     try:
         title_el = card.locator("p[class*='Title__Container']")
         subtitle_el = card.locator("p[class*='Subtitle__Container']")
@@ -138,11 +136,14 @@ def extract_title_and_subtitle(card: Locator) -> tuple[str, str]:
             return title, subtitle
     except Exception:
         pass
+    # Fallback to previous heuristic but skip known overlay/status lines
     try:
         lines = [ln.strip() for ln in card.inner_text().splitlines() if ln.strip()]
+        # Remove initial deadline line if present
         if lines:
             if re.match(r"^(Idag|Ikväll)\s+\d{1,2}:\d{2}$", lines[0]) or lines[0] == "Imorgon":
                 lines = lines[1:]
+        # Skip common status indicators at the start
         skip_phrases = {"Reparationsobjekt", "Testbil", "Reservdelsbil"}
         while lines and lines[0] in skip_phrases:
             lines = lines[1:]
@@ -172,6 +173,11 @@ def extract_condition_status(card: Locator) -> Optional[str]:
 
 
 def fetch_ad_details(page: Page) -> tuple[Optional[str], Optional[str], Optional[str], Dict[str, dict]]:
+    """
+    Extract details from an individual auction page: registration number,
+    dealership price, gearbox and the full condition report with
+    status and comments for each inspection section.
+    """
     regnr: Optional[str] = None
     price: Optional[str] = None
     gearbox: Optional[str] = None
@@ -277,7 +283,6 @@ def scrape_kvd(url: str, headless: bool = True) -> RunResult:
                 consent_btn.click()
         except Exception:
             pass
-
         processed = 0
         should_stop = False
         while not should_stop:
@@ -285,7 +290,6 @@ def scrape_kvd(url: str, headless: bool = True) -> RunResult:
             cards = page.locator("a[data-testid='product-card']")
             total_cards = cards.count()
             print(f"Found {total_cards} cards loaded. Processing new ones...", flush=True)
-
             for idx in range(processed, total_cards):
                 card = cards.nth(idx)
                 try:
@@ -296,25 +300,21 @@ def scrape_kvd(url: str, headless: bool = True) -> RunResult:
                 if not deadline:
                     should_stop = True
                     break
-
                 try:
                     href = card.get_attribute("href") or ""
                     full_url = href if href.startswith("http") else f"https://www.kvd.se{href}"
                 except Exception:
                     full_url = ""
-
                 title, subtitle = extract_title_and_subtitle(card)
-
                 try:
                     props = [span.inner_text() for span in card.locator("div[data-testid='properties'] span").all()]
                     year, mileage, fuel = extract_properties(props)
                 except Exception:
                     year = mileage = fuel = None
-
                 location = extract_location(card)
                 bid = extract_leading_bid(card)
                 condition = extract_condition_status(card)
-
+                # Derive make and model from title
                 make: Optional[str] = None
                 model: Optional[str] = None
                 if title:
@@ -322,10 +322,8 @@ def scrape_kvd(url: str, headless: bool = True) -> RunResult:
                     if parts:
                         make = parts[0]
                         model = parts[1] if len(parts) > 1 else ""
-
                 processed += 1
                 print(f"Processing ad {processed}: {title or 'N/A'} (deadline: {deadline})", flush=True)
-
                 items.append(
                     Item(
                         url=full_url,
@@ -346,10 +344,8 @@ def scrape_kvd(url: str, headless: bool = True) -> RunResult:
                         model=model,
                     )
                 )
-
             if should_stop:
                 break
-
             attempts = 0
             loaded_more = False
             while attempts < 5 and not loaded_more:
@@ -362,7 +358,6 @@ def scrape_kvd(url: str, headless: bool = True) -> RunResult:
                         page.evaluate("el => el.scrollIntoView()", last_card)
                 else:
                     page.evaluate("window.scrollBy(0, window.innerHeight)")
-
                 page.wait_for_timeout(2000)
                 cards = page.locator("a[data-testid='product-card']")
                 new_count = cards.count()
@@ -371,11 +366,10 @@ def scrape_kvd(url: str, headless: bool = True) -> RunResult:
                     loaded_more = True
                     break
                 attempts += 1
-
             if not loaded_more:
                 print("No more cards loaded after scrolling. Stopping.", flush=True)
                 break
-
+        # Always fetch details for each item
         for index, item in enumerate(items, start=1):
             if not item.url:
                 continue
@@ -397,71 +391,11 @@ def scrape_kvd(url: str, headless: bool = True) -> RunResult:
                 ad_page.close()
             except Exception:
                 pass
-
         browser.close()
-
     return RunResult(run_at=run_at, source="kvd.se", query_url=url, items=items)
 
 
-# ---------------------------
-# Tool-mode API (JSON in/out)
-# ---------------------------
-
-def run(input_data: dict) -> dict:
-    """
-    Tool entrypoint.
-    input_data (JSON):
-      - query_url: str (optional) default kvd listing
-      - headless: bool (optional) default True
-      - write_file: bool (optional) default False
-      - out_file: str (optional) if write_file True, override filename
-
-    returns (JSON):
-      - ok: bool
-      - run_at, source, query_url, items
-      - out_file (if written)
-    """
-    query_url = input_data.get("query_url") or "https://www.kvd.se/begagnade-bilar?orderBy=countdown_start_at"
-    headless = bool(input_data.get("headless", True))
-    write_file = bool(input_data.get("write_file", False))
-    out_file_override = input_data.get("out_file")
-
-    result = scrape_kvd(query_url, headless=headless)
-    output = {
-        "run_at": result.run_at,
-        "source": result.source,
-        "query_url": result.query_url,
-        "items": [asdict(item) for item in result.items],
-    }
-
-    out_file = None
-    if write_file:
-        safe_timestamp = result.run_at.replace(":", "-")
-        out_file = out_file_override or f"kvd_result_{safe_timestamp}.json"
-        with open(out_file, "w", encoding="utf-8") as f:
-            json.dump(output, f, ensure_ascii=False, indent=2)
-
-    return {"ok": True, **output, "out_file": out_file}
-
-
-def tool_main() -> int:
-    try:
-        raw = sys.stdin.read().strip()
-        input_data = json.loads(raw) if raw else {}
-        output = run(input_data)
-        sys.stdout.write(json.dumps(output, ensure_ascii=False))
-        return 0
-    except Exception as e:
-        err = {"ok": False, "error": str(e), "traceback": traceback.format_exc()}
-        sys.stderr.write(json.dumps(err, ensure_ascii=False))
-        return 1
-
-
-# ---------------------------
-# CLI-mode (behåll din gamla)
-# ---------------------------
-
-def cli_main(argv: Optional[List[str]] = None) -> int:
+def main(argv: Optional[List[str]] = None) -> int:
     parser = argparse.ArgumentParser(
         description="Scrape Kvdbil auctions with automatic detail extraction and brand/model parsing."
     )
@@ -479,17 +413,14 @@ def cli_main(argv: Optional[List[str]] = None) -> int:
         help="Run the browser with a visible UI (for debugging).",
     )
     args = parser.parse_args(argv)
-
     query_url = "https://www.kvd.se/begagnade-bilar?orderBy=countdown_start_at"
     result = scrape_kvd(query_url, headless=args.headless)
-
     output = {
         "run_at": result.run_at,
         "source": result.source,
         "query_url": result.query_url,
         "items": [asdict(item) for item in result.items],
     }
-
     safe_timestamp = result.run_at.replace(":", "-")
     filename = f"kvd_result_{safe_timestamp}.json"
     with open(filename, "w", encoding="utf-8") as f:
@@ -511,3 +442,4 @@ if __name__ == "__main__":
         # Om isatty inte funkar i miljön, fall back till CLI
         pass
     raise SystemExit(cli_main())
+    raise SystemExit(main())
