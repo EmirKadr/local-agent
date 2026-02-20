@@ -5,3 +5,5 @@ webdriver-manager
 jsonschema
 playwright
 tzdata
+autogen-agentchat
+autogen-ext
