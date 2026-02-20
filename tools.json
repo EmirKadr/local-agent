@@ -1,7 +1,33 @@
 [
   {
     "name": "kvd_scraper",
-    "file": "kvd_scraper12.py",
-    "description": "Scrapar KVD-listningar (idag/ikväll/imorgon) och hämtar detaljer per annons."
+    "description": "Scrapar KVD-listningar (idag/ikväll/imorgon) och hämtar detaljer per annons.",
+    "entrypoint": "Tools/kvd_scraper12.py",
+    "input_schema": {
+      "type": "object",
+      "properties": {
+        "headless": { "type": "boolean", "default": true },
+        "write_file": { "type": "boolean", "default": false }
+      },
+      "additionalProperties": false
+    },
+    "output_schema": {
+      "type": "object",
+      "properties": {
+        "run_at": { "type": "string" },
+        "source": { "type": "string" },
+        "query_url": { "type": "string" },
+        "items": {
+          "type": "array",
+          "items": { "type": "object" }
+        },
+        "out_file": { "type": "string" }
+      },
+      "required": ["run_at", "source", "query_url", "items"]
+    },
+    "examples": [
+      { "input": { "headless": true, "write_file": false } },
+      { "input": { "headless": true, "write_file": true } }
+    ]
   }
 ]
