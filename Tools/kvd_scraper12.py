@@ -422,7 +422,7 @@ def main(argv: Optional[List[str]] = None) -> int:
         "items": [asdict(item) for item in result.items],
     }
     safe_timestamp = result.run_at.replace(":", "-")
-    filename = f"kvd_result_{safe_timestamp}.txt"
+    filename = f"kvd_result_{safe_timestamp}.json"
     with open(filename, "w", encoding="utf-8") as f:
         json.dump(output, f, ensure_ascii=False, indent=2)
     print(f"\nResultat sparat i fil: {filename}", flush=True)

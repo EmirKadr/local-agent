@@ -22,6 +22,33 @@ TOOLS_JSON_PATH = Path(os.environ.get("TOOLS_JSON_PATH", r"C:\local-agent\tools.
 MAX_STEPS = int(os.environ.get("MAX_AGENT_STEPS", "8"))
 PLAN_RETRIES = int(os.environ.get("PLAN_JSON_RETRIES", "2"))
 
+AFFIRMATIVE_WORDS = {"ja", "japp", "yes", "ok", "okej", "kör", "go", "retry", "igen"}
+NEGATIVE_WORDS = {"nej", "no", "stop", "avbryt", "cancel"}
+
+
+def _is_affirmative(text: str) -> bool:
+    t = (text or "").strip().lower()
+    return bool(t) and t in AFFIRMATIVE_WORDS
+
+
+def _is_negative(text: str) -> bool:
+    t = (text or "").strip().lower()
+    return bool(t) and t in NEGATIVE_WORDS
+
+
+def _looks_like_kvd_command(text: str) -> bool:
+    t = (text or "").strip().lower()
+    if not t:
+        return False
+    return "kvd" in t and any(w in t for w in ("kör", "run", "start", "skr"))
+
+
+def _kvd_input_from_text(text: str) -> dict:
+    t = (text or "").lower()
+    write_file = any(w in t for w in ("spara", "fil", "write_file=true"))
+    headless = not any(w in t for w in ("visa", "browser", "webbläsare", "headless=false"))
+    return {"headless": headless, "write_file": write_file}
+
 
 def split_telegram(text: str, chunk_size: int = 3500):
     for i in range(0, len(text), chunk_size):
@@ -124,6 +151,9 @@ def plan_next_action(*, user_text: str, tools: list[dict], session: dict) -> dic
         "- Använd endast tool-namn från listan.\n"
         "- När observation finns måste nästa steg baseras på den.\n"
         "- Om uppgiften är klar: action=final.\n"
+        "- Svara ENDAST JSON, ingen markdown/text runtom.\n"
+        "- Om user uttryckligen säger kör/run/start för ett känt verktyg, returnera action=run direkt och fråga inte om bekräftelse.\n"
+        "- Undvik upprepade bekräftelsefrågor för samma mål.\n"
         "- Svara ENDAST JSON, ingen markdown/text runtom."
     )
 
@@ -139,6 +169,62 @@ def plan_next_action(*, user_text: str, tools: list[dict], session: dict) -> dic
         {"role": "system", "content": system},
         {"role": "user", "content": _compact_json(user_payload, max_len=7000)},
     ]
+
+    last_error = None
+    for retry in range(PLAN_RETRIES + 1):
+        content = lm_chat(messages, temperature=0.0)
+        try:
+            plan = _extract_first_json_object(content)
+            action = plan.get("action")
+            if action not in ("run", "final", "ask"):
+                raise ValueError("Invalid action")
+            if action == "run":
+                if not isinstance(plan.get("tool"), str):
+                    raise ValueError("run requires tool")
+                if not isinstance(plan.get("input", {}), dict):
+                    plan["input"] = {}
+                if "save_as" in plan and not isinstance(plan.get("save_as"), str):
+                    plan.pop("save_as", None)
+                if "note" in plan and not isinstance(plan.get("note"), str):
+                    plan["note"] = ""
+            if action == "ask" and not isinstance(plan.get("question"), str):
+                raise ValueError("ask requires question")
+            if action == "final" and not isinstance(plan.get("answer"), str):
+                raise ValueError("final requires answer")
+            return plan
+        except Exception as e:
+            last_error = str(e)
+            messages.append({"role": "assistant", "content": content})
+            messages.append(
+                {
+                    "role": "user",
+                    "content": "Your previous output was invalid JSON or schema. Return ONLY valid JSON using the required contract.",
+                }
+            )
+            if retry >= PLAN_RETRIES:
+                break
+
+    return {"action": "ask", "question": f"Planner JSON-fel: {last_error}. Kan du omformulera uppgiften?", "choices": []}
+
+
+def call_runner(payload: dict) -> dict:
+    if not RUNNER_PATH.exists():
+        return {"ok": False, "tool": payload.get("tool"), "error": {"type": "runner_missing", "message": f"runner.py hittades inte: {RUNNER_PATH}"}}
+
+    proc = subprocess.run(
+        [sys.executable, str(RUNNER_PATH)],
+        input=json.dumps(payload, ensure_ascii=False),
+        text=True,
+        capture_output=True,
+        timeout=240,
+    )
+
+    if proc.stdout.strip():
+        try:
+            return json.loads(proc.stdout)
+        except Exception:
+            pass
+
 
     last_error = None
     for retry in range(PLAN_RETRIES + 1):
@@ -267,10 +353,69 @@ async def on_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     session.setdefault("vars", {})
     session.setdefault("last_tool", None)
     session.setdefault("step", 0)
+
+    pending = session.get("pending") if isinstance(session.get("pending"), dict) else None
+    if pending:
+        pending_goal = pending.get("goal")
+        if _is_affirmative(text) and isinstance(pending_goal, str) and pending_goal.strip():
+            session.setdefault("history", []).append({"role": "user", "content": "Bekräftade: ja"})
+            text = pending_goal
+            session.pop("pending", None)
+        elif _is_negative(text):
+            session.pop("pending", None)
+            save_session(chat_id, session)
+            await update.message.reply_text("Okej, avbryter. Skriv vad du vill göra istället.")
+            return
+        elif isinstance(pending_goal, str) and pending_goal.strip():
+            text = f"{pending_goal}\nFörtydligande från användaren: {text}"
+            session.pop("pending", None)
+
     session["history"].append({"role": "user", "content": text})
 
     tools = list_tools_from_json()
 
+    # Fast-path: explicit command should run directly, not ask repeatedly.
+    if _looks_like_kvd_command(text):
+        direct_input = _kvd_input_from_text(text)
+        await update.message.reply_text(f"Steg 1/{MAX_STEPS}: kör kvd_scraper")
+        run_result = call_runner({"tool": "kvd_scraper", "input": direct_input})
+        obs = summarize_observation(run_result)
+        session["last_tool"] = {"tool": "kvd_scraper", "input": direct_input, "result": run_result.get("result") if isinstance(run_result, dict) else None, "ok": bool(run_result.get("ok")) if isinstance(run_result, dict) else False}
+        session["history"].append({"role": "observation", "content": obs})
+        session["history"] = session["history"][-40:]
+        session.pop("pending", None)
+        save_session(chat_id, session)
+        await update.message.reply_text(f"Observation:\n{_compact_json(obs, max_len=2000)}")
+        return
+
+    for step in range(1, MAX_STEPS + 1):
+        session["step"] = step
+        save_session(chat_id, session)
+
+        plan = plan_next_action(user_text=text, tools=tools, session=session)
+        session["history"].append({"role": "assistant", "content": _compact_json(plan, 2000)})
+
+        action = plan.get("action")
+        if action == "ask":
+            prev_pending = session.get("pending") if isinstance(session.get("pending"), dict) else {}
+            ask_count = int(prev_pending.get("ask_count", 0)) + 1
+            if ask_count >= 2 and "kvd" in text.lower():
+                forced_input = _kvd_input_from_text(text)
+                await update.message.reply_text("Jag kör direkt för att undvika bekräftelse-loop.")
+                run_result = call_runner({"tool": "kvd_scraper", "input": forced_input})
+                obs = summarize_observation(run_result)
+                session["last_tool"] = {"tool": "kvd_scraper", "input": forced_input, "result": run_result.get("result") if isinstance(run_result, dict) else None, "ok": bool(run_result.get("ok")) if isinstance(run_result, dict) else False}
+                session["history"].append({"role": "observation", "content": obs})
+                session.pop("pending", None)
+                save_session(chat_id, session)
+                await update.message.reply_text(f"Observation:\n{_compact_json(obs, max_len=2000)}")
+                return
+
+            session["pending"] = {
+                "goal": text,
+                "question": plan.get("question", ""),
+                "ask_count": ask_count,
+            }
     for step in range(1, MAX_STEPS + 1):
         session["step"] = step
         save_session(chat_id, session)

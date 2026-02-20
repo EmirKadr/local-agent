@@ -5,6 +5,7 @@ SESSIONS_DIR = Path("sessions")
 
 
 def _default_session() -> dict:
+    return {"history": [], "vars": {}, "last_tool": None, "step": 0, "pending": None}
     return {"history": [], "vars": {}, "last_tool": None, "step": 0}
 
 
@@ -48,4 +49,6 @@ def session_summary(session: dict) -> str:
     parts = [f"step={step}", f"history={history_len}"]
     parts.append("vars=" + (", ".join(vars_keys) if vars_keys else "-"))
     parts.append(f"last_tool={last_tool or '-'}")
+    if (session or {}).get("pending"):
+        parts.append("pending=yes")
     return "\n".join(parts)
