@@ -3,3 +3,9 @@ __pycache__/
 *.pyc
 telegram_token
 kvd_result_*.json
+
+telegram token.txt
+telegram_token.txt
+*.token
+*.env
+.env
