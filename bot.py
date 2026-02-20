@@ -2,6 +2,7 @@ import json
 import os
 import subprocess
 import sys
+from importlib.util import find_spec
 from pathlib import Path
 
 import requests
@@ -22,8 +23,22 @@ MAX_STEPS = int(os.environ.get("MAX_AGENT_STEPS", "8"))
 PLAN_RETRIES = int(os.environ.get("PLAN_JSON_RETRIES", "2"))
 CHAT_HISTORY_LIMIT = int(os.environ.get("CHAT_HISTORY_LIMIT", "12"))
 
+AGENT_MODE = "agent"
+LLM_MODE = "llm"
+DEFAULT_AGENT_ENGINE = os.environ.get("DEFAULT_AGENT_ENGINE", "local").strip().lower() or "local"
+AGENT_ENGINES = {"local", "autogen"}
+
 AFFIRMATIVE_WORDS = {"ja", "japp", "yes", "ok", "okej", "kör", "go", "retry", "igen"}
 NEGATIVE_WORDS = {"nej", "no", "stop", "avbryt", "cancel"}
+
+
+def _normalize_engine(engine: str) -> str:
+    value = (engine or "").strip().lower()
+    return value if value in AGENT_ENGINES else ""
+
+
+def _effective_engine(session: dict) -> str:
+    return _normalize_engine(session.get("agent_engine", DEFAULT_AGENT_ENGINE)) or "local"
 
 
 def _is_affirmative(text: str) -> bool:
@@ -198,7 +213,11 @@ def plan_next_action(*, user_text: str, tools: list[dict], session: dict) -> dic
 
 def call_runner(payload: dict) -> dict:
     if not RUNNER_PATH.exists():
-        return {"ok": False, "tool": payload.get("tool"), "error": {"type": "runner_missing", "message": f"runner.py hittades inte: {RUNNER_PATH}"}}
+        return {
+            "ok": False,
+            "tool": payload.get("tool"),
+            "error": {"type": "runner_missing", "message": f"runner.py hittades inte: {RUNNER_PATH}"},
+        }
 
     proc = subprocess.run(
         [sys.executable, str(RUNNER_PATH)],
@@ -218,6 +237,10 @@ def call_runner(payload: dict) -> dict:
     return {"ok": False, "tool": payload.get("tool"), "error": {"type": "runner_error", "message": msg[:1200]}}
 
 
+def execute_tool(tool: str, tool_input: dict) -> dict:
+    return call_runner({"tool": tool, "input": tool_input})
+
+
 def _history_to_chat_messages(session: dict) -> list[dict]:
     out = [{"role": "system", "content": "Du är en hjälpsam assistent. Svara kort och konkret på svenska."}]
     for h in session.get("history", [])[-CHAT_HISTORY_LIMIT:]:
@@ -227,12 +250,17 @@ def _history_to_chat_messages(session: dict) -> list[dict]:
     return out
 
 
+def _autogen_available() -> bool:
+    return find_spec("autogen_agentchat") is not None and find_spec("autogen_ext") is not None
+
+
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(
         "OK. Default-läge: vanlig LLM-chat.\n"
         "• /agent => växla till agentläge (plan/run/observation/final)\n"
         "• /llm => växla tillbaka till vanlig LLM\n"
         "• /mode visar nuvarande läge\n"
+        "• /engine [local|autogen] visar/sätter agent-engine\n"
         "• /run {JSON} kör valfritt registry-tool via runner\n"
         "• /tools listar tools från tools.json\n"
         "• /vars visar session-vars\n"
@@ -242,21 +270,52 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 async def mode_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     session = load_session(update.effective_chat.id)
-    await update.message.reply_text(f"Läge: {session.get('mode', 'llm')}")
+    await update.message.reply_text(
+        f"Läge: {session.get('mode', LLM_MODE)}\nAgent-engine: {_effective_engine(session)}"
+    )
+
+
+async def engine_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    chat_id = update.effective_chat.id
+    session = load_session(chat_id)
+
+    if not context.args:
+        await update.message.reply_text(
+            f"Agent-engine: {_effective_engine(session)}\nTillgängliga: {', '.join(sorted(AGENT_ENGINES))}"
+        )
+        return
+
+    requested = _normalize_engine(context.args[0])
+    if not requested:
+        await update.message.reply_text(
+            f"Ogiltig engine. Använd: {', '.join(sorted(AGENT_ENGINES))}"
+        )
+        return
+
+    if requested == "autogen" and not _autogen_available():
+        await update.message.reply_text(
+            "autogen-engine vald men paket saknas i miljön.\n"
+            "Installera autogen-agentchat + autogen-ext eller kör /engine local."
+        )
+
+    session["agent_engine"] = requested
+    save_session(chat_id, session)
+    await update.message.reply_text(f"Agent-engine satt till: {requested}")
 
 
 async def agent_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     chat_id = update.effective_chat.id
     session = load_session(chat_id)
-    session["mode"] = "agent"
+    session["mode"] = AGENT_MODE
+    session.setdefault("agent_engine", DEFAULT_AGENT_ENGINE)
     save_session(chat_id, session)
-    await update.message.reply_text("Agentläge aktiverat.")
+    await update.message.reply_text(f"Agentläge aktiverat. Engine: {_effective_engine(session)}")
 
 
 async def llm_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     chat_id = update.effective_chat.id
     session = load_session(chat_id)
-    session["mode"] = "llm"
+    session["mode"] = LLM_MODE
     session.pop("pending", None)
     save_session(chat_id, session)
     await update.message.reply_text("LLM-läge aktiverat.")
@@ -317,7 +376,20 @@ async def _handle_llm_mode(update: Update, text: str, session: dict):
         await update.message.reply_text(part)
 
 
-async def _handle_agent_mode(update: Update, text: str, session: dict):
+async def _handle_autogen_mode(update: Update, text: str, session: dict) -> bool:
+    if not _autogen_available():
+        await update.message.reply_text(
+            "Autogen-engine är vald men paketen saknas. Faller tillbaka till local-engine för detta meddelande."
+        )
+        return False
+
+    await update.message.reply_text(
+        "Autogen-engine är förberedd men ännu inte implementerad i detalj. Faller tillbaka till local-engine."
+    )
+    return False
+
+
+async def _handle_local_agent_mode(update: Update, text: str, session: dict):
     chat_id = update.effective_chat.id
     session["history"].append({"role": "user", "content": text})
     tools = list_tools_from_json()
@@ -325,9 +397,14 @@ async def _handle_agent_mode(update: Update, text: str, session: dict):
     if _looks_like_kvd_command(text):
         direct_input = _kvd_input_from_text(text)
         await update.message.reply_text(f"Steg 1/{MAX_STEPS}: kör kvd_scraper")
-        run_result = call_runner({"tool": "kvd_scraper", "input": direct_input})
+        run_result = execute_tool("kvd_scraper", direct_input)
         obs = summarize_observation(run_result)
-        session["last_tool"] = {"tool": "kvd_scraper", "input": direct_input, "result": run_result.get("result") if isinstance(run_result, dict) else None, "ok": bool(run_result.get("ok")) if isinstance(run_result, dict) else False}
+        session["last_tool"] = {
+            "tool": "kvd_scraper",
+            "input": direct_input,
+            "result": run_result.get("result") if isinstance(run_result, dict) else None,
+            "ok": bool(run_result.get("ok")) if isinstance(run_result, dict) else False,
+        }
         session["history"].append({"role": "observation", "content": obs})
         session["history"] = session["history"][-40:]
         save_session(chat_id, session)
@@ -363,9 +440,14 @@ async def _handle_agent_mode(update: Update, text: str, session: dict):
         tool_input = plan.get("input", {})
         await update.message.reply_text(f"Steg {step}/{MAX_STEPS}: kör {tool}")
 
-        run_result = call_runner({"tool": tool, "input": tool_input})
+        run_result = execute_tool(tool, tool_input)
         obs = summarize_observation(run_result)
-        session["last_tool"] = {"tool": tool, "input": tool_input, "result": run_result.get("result") if isinstance(run_result, dict) else None, "ok": bool(run_result.get("ok")) if isinstance(run_result, dict) else False}
+        session["last_tool"] = {
+            "tool": tool,
+            "input": tool_input,
+            "result": run_result.get("result") if isinstance(run_result, dict) else None,
+            "ok": bool(run_result.get("ok")) if isinstance(run_result, dict) else False,
+        }
 
         if isinstance(run_result, dict) and run_result.get("ok") and isinstance(plan.get("save_as"), str) and plan.get("save_as"):
             session["vars"][plan["save_as"]] = run_result.get("result")
@@ -378,6 +460,15 @@ async def _handle_agent_mode(update: Update, text: str, session: dict):
     await update.message.reply_text("Jag nådde max steg utan final.")
 
 
+async def _handle_agent_mode(update: Update, text: str, session: dict):
+    engine = _effective_engine(session)
+    if engine == "autogen":
+        handled = await _handle_autogen_mode(update, text, session)
+        if handled:
+            return
+    await _handle_local_agent_mode(update, text, session)
+
+
 async def on_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     text = (update.message.text or "").strip()
     chat_id = update.effective_chat.id
@@ -387,9 +478,10 @@ async def on_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     session.setdefault("vars", {})
     session.setdefault("last_tool", None)
     session.setdefault("step", 0)
-    session.setdefault("mode", "llm")
+    session.setdefault("mode", LLM_MODE)
+    session.setdefault("agent_engine", DEFAULT_AGENT_ENGINE)
 
-    if session.get("mode") == "agent":
+    if session.get("mode") == AGENT_MODE:
         await _handle_agent_mode(update, text, session)
     else:
         await _handle_llm_mode(update, text, session)
@@ -403,6 +495,7 @@ def main():
     app = Application.builder().token(token).build()
     app.add_handler(CommandHandler("start", start))
     app.add_handler(CommandHandler("mode", mode_cmd))
+    app.add_handler(CommandHandler("engine", engine_cmd))
     app.add_handler(CommandHandler("agent", agent_cmd))
     app.add_handler(CommandHandler("llm", llm_cmd))
     app.add_handler(CommandHandler("tools", tools_cmd))
