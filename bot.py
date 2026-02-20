@@ -31,6 +31,20 @@ AGENT_ENGINES = {"local", "autogen"}
 AFFIRMATIVE_WORDS = {"ja", "japp", "yes", "ok", "okej", "kör", "go", "retry", "igen"}
 NEGATIVE_WORDS = {"nej", "no", "stop", "avbryt", "cancel"}
 
+AGENT_TRIGGER_WORDS = (
+    "kör",
+    "run",
+    "start",
+    "script",
+    "skript",
+    "läs fil",
+    "read file",
+    "hämta",
+    "fetch",
+    "databas",
+    "database",
+)
+
 
 def _normalize_engine(engine: str) -> str:
     value = (engine or "").strip().lower()
@@ -52,6 +66,13 @@ def _is_negative(text: str) -> bool:
 def _looks_like_kvd_command(text: str) -> bool:
     t = (text or "").strip().lower()
     return bool(t) and "kvd" in t and any(w in t for w in ("kör", "run", "start", "skr"))
+
+
+def should_activate_agent_mode(text: str) -> bool:
+    t = (text or "").strip().lower()
+    if not t:
+        return False
+    return any(trigger in t for trigger in AGENT_TRIGGER_WORDS)
 
 
 def _kvd_input_from_text(text: str) -> dict:
@@ -242,7 +263,16 @@ def execute_tool(tool: str, tool_input: dict) -> dict:
 
 
 def _history_to_chat_messages(session: dict) -> list[dict]:
-    out = [{"role": "system", "content": "Du är en hjälpsam assistent. Svara kort och konkret på svenska."}]
+    out = [
+        {
+            "role": "system",
+            "content": (
+                "Du har två lägen: LLM-LÄGE (default) och AGENTLÄGE (vid behov). "
+                "I LLM-LÄGE svarar du direkt, kort och konkret på svenska utan verktyg eller meta-frågor. "
+                "Ställ bara följdfråga om svaret annars blir meningslöst."
+            ),
+        }
+    ]
     for h in session.get("history", [])[-CHAT_HISTORY_LIMIT:]:
         role = h.get("role")
         if role in ("user", "assistant") and isinstance(h.get("content"), str):
@@ -461,6 +491,14 @@ async def _handle_local_agent_mode(update: Update, text: str, session: dict):
 
 
 async def _handle_agent_mode(update: Update, text: str, session: dict):
+    if _is_negative(text):
+        session["history"].append({"role": "user", "content": text})
+        session["history"].append({"role": "assistant", "content": "Okej, då stannar vi här."})
+        session["history"] = session["history"][-40:]
+        save_session(update.effective_chat.id, session)
+        await update.message.reply_text("Okej, då stannar vi här.")
+        return
+
     engine = _effective_engine(session)
     if engine == "autogen":
         handled = await _handle_autogen_mode(update, text, session)
@@ -481,7 +519,13 @@ async def on_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     session.setdefault("mode", LLM_MODE)
     session.setdefault("agent_engine", DEFAULT_AGENT_ENGINE)
 
-    if session.get("mode") == AGENT_MODE:
+    active_mode = session.get("mode")
+    if active_mode == LLM_MODE and should_activate_agent_mode(text):
+        await update.message.reply_text("Jag hämtar/beräknar detta.")
+        await _handle_agent_mode(update, text, session)
+        return
+
+    if active_mode == AGENT_MODE:
         await _handle_agent_mode(update, text, session)
     else:
         await _handle_llm_mode(update, text, session)
