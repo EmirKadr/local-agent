@@ -6,6 +6,7 @@ SESSIONS_DIR = Path("sessions")
 
 def _default_session() -> dict:
     return {"history": [], "vars": {}, "last_tool": None, "step": 0, "pending": None}
+    return {"history": [], "vars": {}, "last_tool": None, "step": 0}
 
 
 def _session_path(chat_id: int) -> Path:

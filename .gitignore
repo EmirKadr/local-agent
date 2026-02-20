@@ -8,4 +8,4 @@ telegram token.txt
 telegram_token.txt
 *.token
 *.env
-.env
+.envTools/*.txt

@@ -42,6 +42,8 @@ def load_registry() -> list[dict]:
     return data if isinstance(data, list) else []
 
 
+
+
 def get_tool_spec(tool_name: str) -> dict | None:
     for tool in load_registry():
         if tool.get("name") == tool_name:
@@ -119,6 +121,8 @@ def _extract_last_json(stdout_text: str) -> dict[str, Any]:
     raise ValueError(f"Could not extract JSON from stdout. Last error: {last_err}. Stdout sample: {sample}")
 
 
+
+
 def run_tool(entrypoint: str, input_data: dict[str, Any]) -> dict[str, Any]:
     tool_path = Path(entrypoint)
     if not tool_path.is_absolute():
@@ -131,6 +135,22 @@ def run_tool(entrypoint: str, input_data: dict[str, Any]) -> dict[str, Any]:
     env = os.environ.copy()
     # Hint tools that support dual CLI/tool mode to force JSON tool behavior.
     env["LOCAL_AGENT_TOOL_MODE"] = "1"
+    raise ValueError(f"Could not extract JSON from stdout. Last error: {last_err}")
+
+    if not tool_path.exists() or tool_path.suffix.lower() != ".py":
+        raise FileNotFoundError(f"Tool entrypoint not found: {tool_path}")
+
+    env = os.environ.copy()
+    # Hint tools that support dual CLI/tool mode to force JSON tool behavior.
+    env["LOCAL_AGENT_TOOL_MODE"] = "1"
+def run_tool(entrypoint: str, input_data: dict[str, Any]) -> dict[str, Any]:
+    tool_path = Path(entrypoint)
+    if not tool_path.is_absolute():
+        tool_path = TOOLS_DIR.parent / tool_path
+    tool_path = tool_path.resolve()
+
+    if not tool_path.exists() or tool_path.suffix.lower() != ".py":
+        raise FileNotFoundError(f"Tool entrypoint not found: {tool_path}")
 
     proc = subprocess.run(
         [sys.executable, str(tool_path)],
