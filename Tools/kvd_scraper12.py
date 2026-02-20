@@ -17,6 +17,7 @@ condition report.
 from __future__ import annotations
 
 import argparse
+import os
 import json
 import re
 import sys
@@ -490,7 +491,7 @@ def cli_main(argv: Optional[List[str]] = None) -> int:
     }
 
     safe_timestamp = result.run_at.replace(":", "-")
-    filename = f"kvd_result_{safe_timestamp}.txt"
+    filename = f"kvd_result_{safe_timestamp}.json"
     with open(filename, "w", encoding="utf-8") as f:
         json.dump(output, f, ensure_ascii=False, indent=2)
     print(f"\nResultat sparat i fil: {filename}", flush=True)
@@ -498,6 +499,10 @@ def cli_main(argv: Optional[List[str]] = None) -> int:
 
 
 if __name__ == "__main__":
+    # Force tool mode when runner sets env flag (reliable in non-interactive shells)
+    if os.environ.get("LOCAL_AGENT_TOOL_MODE") == "1":
+        raise SystemExit(tool_main())
+
     # Auto-detect: om stdin har JSON -> tool mode, annars CLI
     try:
         if not sys.stdin.isatty():
