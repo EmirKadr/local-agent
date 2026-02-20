@@ -5,8 +5,14 @@ SESSIONS_DIR = Path("sessions")
 
 
 def _default_session() -> dict:
-    return {"history": [], "vars": {}, "last_tool": None, "step": 0, "pending": None}
-    return {"history": [], "vars": {}, "last_tool": None, "step": 0}
+    return {
+        "history": [],
+        "vars": {},
+        "last_tool": None,
+        "step": 0,
+        "pending": None,
+        "mode": "llm",
+    }
 
 
 def _session_path(chat_id: int) -> Path:
@@ -47,6 +53,7 @@ def session_summary(session: dict) -> str:
     step = (session or {}).get("step", 0)
 
     parts = [f"step={step}", f"history={history_len}"]
+    parts.append(f"mode={(session or {}).get('mode', 'llm')}")
     parts.append("vars=" + (", ".join(vars_keys) if vars_keys else "-"))
     parts.append(f"last_tool={last_tool or '-'}")
     if (session or {}).get("pending"):
