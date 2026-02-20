@@ -8,6 +8,7 @@ import requests
 from telegram import Update
 from telegram.ext import Application, CommandHandler, MessageHandler, ContextTypes, filters
 
+from session_store import load_session, save_session, reset_session, session_summary
 
 # --- LM Studio ---
 LM_STUDIO_BASE = os.environ.get("OPENAI_API_BASE", "http://127.0.0.1:1234/v1")
@@ -16,6 +17,9 @@ MODEL_ID = os.environ.get("LM_MODEL", "qwen/qwen3-vl-8b")
 # --- Local runner/tooling ---
 RUNNER_PATH = Path(os.environ.get("RUNNER_PATH", r"C:\local-agent\Tools\runner.py"))
 TOOLS_JSON_PATH = Path(os.environ.get("TOOLS_JSON_PATH", r"C:\local-agent\tools.json"))
+
+# Agent loop
+MAX_STEPS = int(os.environ.get("MAX_AGENT_STEPS", "8"))
 
 
 def call_lm_studio(user_text: str) -> str:
@@ -56,7 +60,7 @@ def call_runner(payload: dict) -> dict:
 
 def split_telegram(text: str, chunk_size: int = 3500):
     for i in range(0, len(text), chunk_size):
-        yield text[i:i + chunk_size]
+        yield text[i : i + chunk_size]
 
 
 def list_tools_from_json() -> list[dict]:
@@ -97,6 +101,10 @@ def plan_tool_call(user_text: str, tools: list[dict]) -> dict:
         "- Sätt input.write_file=true om användaren säger spara/fil.\n"
         "- headless ska vara true om inte användaren uttryckligen vill se webbläsaren.\n"
         "- Om du är osäker: välj chat.\n"
+        "\n"
+        "Extra (agent-loop):\n"
+        "- Om användaren ber om flera steg (t.ex. 'hämta + filtrera + stats'), returnera fortfarande bara ett steg i taget.\n"
+        "- När ett steg är klart kommer du få frågan igen och kan välja nästa tool.\n"
     )
 
     payload = {
@@ -134,6 +142,8 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "• /kvd kör KVD-scraper (kvd_scraper).\n"
         "• /run {JSON} kör valfritt tool via runner.\n"
         "• /tools listar tools från tools.json\n"
+        "• /vars visar session-vars\n"
+        "• /reset rensar session\n"
     )
 
 
@@ -221,62 +231,71 @@ async def kvd(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text(part)
 
 
+async def reset_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    chat_id = update.effective_chat.id
+    reset_session(chat_id)
+    await update.message.reply_text("Session reset.")
+
+
+async def vars_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    chat_id = update.effective_chat.id
+    session = load_session(chat_id)
+    await update.message.reply_text(session_summary(session))
+
+
 async def on_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """
+    Agent-loop:
+      plan -> run -> observe -> plan -> ...
+    Just nu kör vi flera steg genom att låta samma user_text trigga fler tool-val.
+    Session lagras i ./sessions/<chat_id>.json
+    """
     text = (update.message.text or "").strip()
+    chat_id = update.effective_chat.id
+    session = load_session(chat_id)
 
-    # Auto-tool routing via LM Studio (före triggers)
+    # Backwards compatibility: "kvd ..." utan slash
+    if text.lower().startswith("kvd"):
+        return await kvd(update, context)
+
     tools = list_tools_from_json()
-    try:
-        plan = plan_tool_call(text, tools)
-    except Exception:
-        plan = {"action": "chat"}
 
-    if plan.get("action") == "run":
+    step = 0
+    while step < MAX_STEPS:
+        step += 1
+
+        try:
+            plan = plan_tool_call(text, tools)
+        except Exception:
+            plan = {"action": "chat"}
+
+        if plan.get("action") != "run":
+            break
+
         tool = plan["tool"]
         tool_input = plan.get("input", {})
 
-        await update.message.reply_text("Kör tool...")
+        await update.message.reply_text(f"Kör tool: {tool} (steg {step})...")
+
         try:
             result = call_runner({"tool": tool, "input": tool_input})
-            msg = "OK."
-            if isinstance(result, dict) and "items" in result and isinstance(result["items"], list):
-                msg = f"OK. items={len(result['items'])}"
-            for part in split_telegram(msg):
-                await update.message.reply_text(part)
         except Exception as e:
-            await update.message.reply_text(f"Fel: {e}")
-        return
+            await update.message.reply_text(f"Fel när jag körde {tool}: {e}")
+            return
 
-    # Snabbtrigger utan kommando (fallback)
-    if text.lower().startswith("kvd"):
-        parts = text.split()
-        headless = True
-        write_file = False
-        for arg in parts[1:]:
-            if "=" in arg:
-                k, v = arg.split("=", 1)
-                k = k.strip().lower()
-                v = v.strip().lower()
-                if k == "headless":
-                    headless = v in ("1", "true", "yes", "y", "on")
-                elif k == "write_file":
-                    write_file = v in ("1", "true", "yes", "y", "on")
+        # Save session
+        session["last_result"] = result
+        session.setdefault("history", []).append({"tool": tool, "input": tool_input})
+        save_session(chat_id, session)
 
-        await update.message.reply_text("Kör KVD-scraper...")
-        try:
-            result = call_runner({"tool": "kvd_scraper", "input": {"headless": headless, "write_file": write_file}})
-            items = result.get("items", [])
-            out_file = result.get("out_file")
+        # Short feedback
+        msg = "OK."
+        if isinstance(result, dict) and "items" in result and isinstance(result["items"], list):
+            msg = f"OK. items={len(result['items'])}"
+        await update.message.reply_text(msg)
 
-            msg = f"Hittade {len(items)} annonser."
-            if out_file:
-                msg += f"\nSparade fil: {out_file}"
-
-            for part in split_telegram(msg):
-                await update.message.reply_text(part)
-        except Exception as e:
-            await update.message.reply_text(f"Fel när jag körde KVD-scraper: {e}")
-        return
+        # Continue loop (next step may be triggered by same user request)
+        continue
 
     # Default: LM Studio chat
     try:
@@ -298,6 +317,8 @@ def main():
     app.add_handler(CommandHandler("tools", tools_cmd))
     app.add_handler(CommandHandler("run", run_cmd))
     app.add_handler(CommandHandler("kvd", kvd))
+    app.add_handler(CommandHandler("reset", reset_cmd))
+    app.add_handler(CommandHandler("vars", vars_cmd))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, on_message))
     app.run_polling()
 
