@@ -1,0 +1,5 @@
+venv/
+__pycache__/
+*.pyc
+telegram_token
+kvd_result_*.json

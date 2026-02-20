@@ -1,0 +1,7 @@
+[
+  {
+    "name": "kvd_scraper",
+    "file": "kvd_scraper12.py",
+    "description": "Scrapar KVD-listningar (idag/ikväll/imorgon) och hämtar detaljer per annons."
+  }
+]

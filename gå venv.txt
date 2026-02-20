@@ -1,0 +1,4 @@
+cd C:\local-agent
+venv\Scripts\activate.bat
+set TELEGRAM_BOT_TOKEN=8393754228:AAHiUoPGIpwVV4iWPnbFDG4IDTNGZZPnQ3E
+python bot.py
