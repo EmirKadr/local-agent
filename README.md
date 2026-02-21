@@ -49,18 +49,6 @@ export RUNNER_PATH="$(pwd)/Tools/runner.py"
 export TOOLS_JSON_PATH="$(pwd)/tools.json"
 ```
 
-## Verktyg (tools) i registry
-
-Boten läser tillgängliga verktyg dynamiskt från `tools.json`.
-Det betyder att när du lägger till, tar bort eller byter namn på tools i registryt, behöver du normalt inte ändra botlogiken.
-
-Snabbflöde:
-
-1. Lägg till/uppdatera tool i `tools.json` (`name`, `entrypoint`, `input_schema`).
-2. Säkerställ att entrypoint-scriptet läser JSON från stdin och skriver JSON till stdout.
-3. Kör `/tools` i Telegram för att verifiera att boten ser verktyget.
-4. Kör verktyget med `/run {"tool":"<tool_name>","input":{...}}` eller via agentläget.
-
 ## Starta boten
 
 ```bash
