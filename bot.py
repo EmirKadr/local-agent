@@ -63,9 +63,49 @@ def _is_negative(text: str) -> bool:
     return (text or "").strip().lower() in NEGATIVE_WORDS
 
 
-def _looks_like_kvd_command(text: str) -> bool:
+def _has_run_intent(text: str) -> bool:
     t = (text or "").strip().lower()
-    return bool(t) and "kvd" in t and any(w in t for w in ("kör", "run", "start", "skr"))
+    return bool(t) and any(w in t for w in ("kör", "run", "start", "skr"))
+
+
+def _build_default_input(schema: dict) -> dict:
+    if not isinstance(schema, dict):
+        return {}
+    properties = schema.get("properties", {}) if isinstance(schema.get("properties"), dict) else {}
+    defaults = {}
+    for key, prop in properties.items():
+        if isinstance(prop, dict) and "default" in prop:
+            defaults[key] = prop["default"]
+    return defaults
+
+
+def _extract_direct_tool_call(text: str, tools: list[dict]) -> tuple[str, dict] | None:
+    t = (text or "").strip().lower()
+    if not t or not _has_run_intent(t):
+        return None
+
+    for tool in tools:
+        name = (tool.get("name") or "").strip()
+        if not name:
+            continue
+        if name.lower() in t:
+            schema = tool.get("input_schema", {}) if isinstance(tool.get("input_schema"), dict) else {}
+            direct_input = _build_default_input(schema)
+
+            if "headless" in direct_input:
+                if any(w in t for w in ("visa", "browser", "webbläsare", "headless=false")):
+                    direct_input["headless"] = False
+                if "headless=true" in t:
+                    direct_input["headless"] = True
+
+            if "write_file" in direct_input:
+                if any(w in t for w in ("spara", "fil", "write_file=true")):
+                    direct_input["write_file"] = True
+                if "write_file=false" in t:
+                    direct_input["write_file"] = False
+
+            return name, direct_input
+    return None
 
 
 def should_activate_agent_mode(text: str) -> bool:
@@ -73,13 +113,6 @@ def should_activate_agent_mode(text: str) -> bool:
     if not t:
         return False
     return any(trigger in t for trigger in AGENT_TRIGGER_WORDS)
-
-
-def _kvd_input_from_text(text: str) -> dict:
-    t = (text or "").lower()
-    write_file = any(w in t for w in ("spara", "fil", "write_file=true"))
-    headless = not any(w in t for w in ("visa", "browser", "webbläsare", "headless=false"))
-    return {"headless": headless, "write_file": write_file}
 
 
 def split_telegram(text: str, chunk_size: int = 3500):
@@ -371,7 +404,7 @@ async def run_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     raw = (update.message.text or "").strip()
     parts = raw.split(" ", 1)
     if len(parts) < 2:
-        await update.message.reply_text('Usage: /run {"tool":"kvd_scraper","input":{...}}')
+        await update.message.reply_text('Usage: /run {"tool":"tool_name","input":{...}}')
         return
 
     try:
@@ -423,14 +456,14 @@ async def _handle_local_agent_mode(update: Update, text: str, session: dict):
     chat_id = update.effective_chat.id
     session["history"].append({"role": "user", "content": text})
     tools = list_tools_from_json()
-
-    if _looks_like_kvd_command(text):
-        direct_input = _kvd_input_from_text(text)
-        await update.message.reply_text(f"Steg 1/{MAX_STEPS}: kör kvd_scraper")
-        run_result = execute_tool("kvd_scraper", direct_input)
+    direct_call = _extract_direct_tool_call(text, tools)
+    if direct_call:
+        tool_name, direct_input = direct_call
+        await update.message.reply_text(f"Steg 1/{MAX_STEPS}: kör {tool_name}")
+        run_result = execute_tool(tool_name, direct_input)
         obs = summarize_observation(run_result)
         session["last_tool"] = {
-            "tool": "kvd_scraper",
+            "tool": tool_name,
             "input": direct_input,
             "result": run_result.get("result") if isinstance(run_result, dict) else None,
             "ok": bool(run_result.get("ok")) if isinstance(run_result, dict) else False,
