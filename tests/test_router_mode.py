@@ -1,6 +1,6 @@
 import unittest
 
-from bot import _handle_agent_mode, should_activate_agent_mode
+from bot import _extract_direct_tool_call, _handle_agent_mode, should_activate_agent_mode
 
 
 class RouterModeTests(unittest.TestCase):
@@ -44,6 +44,46 @@ class AgentLoopTests(unittest.IsolatedAsyncioTestCase):
 
         self.assertEqual(update.message.replies, ["Okej, då stannar vi här."])
         self.assertEqual(session["history"][-1]["content"], "Okej, då stannar vi här.")
+
+
+class DirectToolRoutingTests(unittest.TestCase):
+    def test_direct_tool_call_uses_defaults(self):
+        tools = [
+            {
+                "name": "cars_lookup",
+                "input_schema": {
+                    "type": "object",
+                    "properties": {
+                        "headless": {"type": "boolean", "default": True},
+                        "write_file": {"type": "boolean", "default": False},
+                    },
+                },
+            }
+        ]
+
+        tool_name, payload = _extract_direct_tool_call("kör cars_lookup", tools)
+
+        self.assertEqual(tool_name, "cars_lookup")
+        self.assertEqual(payload, {"headless": True, "write_file": False})
+
+    def test_direct_tool_call_applies_text_overrides(self):
+        tools = [
+            {
+                "name": "cars_lookup",
+                "input_schema": {
+                    "type": "object",
+                    "properties": {
+                        "headless": {"type": "boolean", "default": True},
+                        "write_file": {"type": "boolean", "default": False},
+                    },
+                },
+            }
+        ]
+
+        tool_name, payload = _extract_direct_tool_call("start cars_lookup och spara fil visa browser", tools)
+
+        self.assertEqual(tool_name, "cars_lookup")
+        self.assertEqual(payload, {"headless": False, "write_file": True})
 
 
 if __name__ == "__main__":
