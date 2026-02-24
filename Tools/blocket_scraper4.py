@@ -18,6 +18,7 @@ import json
 import re
 from dataclasses import dataclass, asdict
 from datetime import datetime
+from pathlib import Path
 from typing import List, Optional, Dict
 
 from zoneinfo import ZoneInfo
@@ -622,12 +623,14 @@ def main(argv=None) -> int:
         "items":         [asdict(item) for item in result.items],
     }
 
-    safe_ts  = result.run_at.replace(":", "-")
-    filename = f"blocket_result_{safe_ts}.json"
-    with open(filename, "w", encoding="utf-8") as f:
+    safe_ts = result.run_at.replace(":", "-")
+    results_dir = Path(__file__).parent / Path(__file__).stem / "results"
+    results_dir.mkdir(parents=True, exist_ok=True)
+    filepath = results_dir / f"blocket_result_{safe_ts}.json"
+    with open(filepath, "w", encoding="utf-8") as f:
         json.dump(output, f, ensure_ascii=False, indent=2)
 
-    print(f"\n✓ {result.total_scraped} annonser sparade i: {filename}", flush=True)
+    print(f"\n✓ {result.total_scraped} annonser sparade i: {filepath}", flush=True)
     return 0
 
 
