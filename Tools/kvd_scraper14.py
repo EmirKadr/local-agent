@@ -16,6 +16,7 @@ import json
 import re
 from dataclasses import dataclass, asdict
 from datetime import datetime
+from pathlib import Path
 from typing import Iterable, List, Optional, Dict
 from urllib.parse import urlencode
 
@@ -654,10 +655,12 @@ def main(argv: Optional[List[str]] = None) -> int:
         "items":     [asdict(item) for item in result.items],
     }
     safe_timestamp = result.run_at.replace(":", "-")
-    filename = f"kvd_result_{safe_timestamp}.json"
-    with open(filename, "w", encoding="utf-8") as f:
+    results_dir = Path(__file__).parent / Path(__file__).stem / "results"
+    results_dir.mkdir(parents=True, exist_ok=True)
+    filepath = results_dir / f"kvd_result_{safe_timestamp}.json"
+    with open(filepath, "w", encoding="utf-8") as f:
         json.dump(output, f, ensure_ascii=False, indent=2)
-    print(f"\nResultat sparat i fil: {filename}", flush=True)
+    print(f"\nResultat sparat i fil: {filepath}", flush=True)
     return 0
 
 
