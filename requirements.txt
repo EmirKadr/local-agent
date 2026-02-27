@@ -7,3 +7,5 @@ playwright
 tzdata
 autogen-agentchat
 autogen-ext
+beautifulsoup4
+anthropic

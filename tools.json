@@ -29,5 +29,56 @@
       { "input": { "headless": true, "write_file": false } },
       { "input": { "headless": true, "write_file": true } }
     ]
+  },
+  {
+    "name": "web_inspector",
+    "description": "Hämtar HTML från en URL, analyserar sidans struktur (titlar, formulär, länkar, navigering m.m.) och returnerar en AI-genererad förklaring av hur sidan fungerar och vad som finns där.",
+    "entrypoint": "Tools/web_inspector.py",
+    "input_schema": {
+      "type": "object",
+      "properties": {
+        "url":        { "type": "string",  "description": "URL att inspektera, t.ex. https://www.blocket.se" },
+        "headless":   { "type": "boolean", "default": true,  "description": "Playwright headless-läge" },
+        "use_ai":     { "type": "boolean", "default": true,  "description": "Använd Claude för AI-analys av sidan" },
+        "write_file": { "type": "boolean", "default": false, "description": "Spara resultat som JSON-fil" }
+      },
+      "required": ["url"],
+      "additionalProperties": false
+    },
+    "output_schema": {
+      "type": "object",
+      "properties": {
+        "url":          { "type": "string" },
+        "fetched_at":   { "type": "string" },
+        "fetch_method": { "type": "string", "enum": ["requests", "playwright"] },
+        "structure": {
+          "type": "object",
+          "properties": {
+            "title":            { "type": "string" },
+            "meta":             { "type": "object" },
+            "headings":         { "type": "object" },
+            "navigation":       { "type": "array" },
+            "internal_links":   { "type": "array" },
+            "external_links":   { "type": "array" },
+            "forms":            { "type": "array" },
+            "images":           { "type": "array" },
+            "scripts_external": { "type": "array" },
+            "stylesheets":      { "type": "array" },
+            "main_text_sample": { "type": "array" },
+            "total_links":      { "type": "integer" },
+            "total_images":     { "type": "integer" },
+            "total_scripts":    { "type": "integer" },
+            "total_forms":      { "type": "integer" }
+          }
+        },
+        "ai_summary": { "type": ["string", "null"] },
+        "out_file":   { "type": ["string", "null"] }
+      },
+      "required": ["url", "fetched_at", "fetch_method", "structure"]
+    },
+    "examples": [
+      { "input": { "url": "https://www.blocket.se", "use_ai": true,  "write_file": false } },
+      { "input": { "url": "https://example.com",   "use_ai": false, "write_file": true  } }
+    ]
   }
 ]
