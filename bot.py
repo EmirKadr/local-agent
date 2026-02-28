@@ -40,8 +40,18 @@ _BUILD_VERBS = ("bygg", "skapa", "implementera", "utveckla", "skriv kod", "gener
 
 DIRECT_KVD_TRIGGERS = ("kvd", "kvdbil", "kvd.se")
 DIRECT_BLOCKET_TRIGGERS = (
+    # generellt – fungerar som "kvd" för KVD
+    "blocket",
+    # explicita kommandon
+    "blocket scraper", "blocket scrapern",
+    "använd blocket", "kör blocket",
+    "starta blocket", "hämta blocket",
+    # beskrivande fraser
     "bilannonser från blocket", "bilar från blocket", "annonser från blocket",
-    "blocket bilar", "blocket bil", "hämta blocket", "blocket.se/bilar",
+    "blocket bilar", "blocket bil", "blocket.se/bilar",
+    "sök på blocket", "hitta på blocket",
+    "leta på blocket", "kolla blocket",
+    "från blocket", "via blocket",
 )
 
 def _is_direct_kvd_fetch(text: str) -> bool:
@@ -201,6 +211,15 @@ AGENT_TRIGGER_WORDS = (
     "fetch",
     "databas",
     "database",
+    "ta fram",
+    "hitta",
+    "sök",
+    "jämför",
+    "visa mig",
+    "lista",
+    "räkna",
+    "beräkna",
+    "analysera",
 )
 
 
