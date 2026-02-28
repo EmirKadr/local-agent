@@ -93,12 +93,12 @@ def main() -> None:
         git_pull()
 
         if restart:
-            print("[watcher] Kärnfiler ändrade – startar om boten.", flush=True)
+            print(f"[watcher] {datetime.now().strftime('%H:%M:%S')} Kärnfiler ändrade – startar om boten.", flush=True)
             stop_bot(proc)
             pip_install()
             proc = start_bot()
         else:
-            print("[watcher] Bara tool-filer uppdaterade – ingen restart.", flush=True)
+            print(f"[watcher] {datetime.now().strftime('%H:%M:%S')} Bara tool-filer uppdaterade – ingen restart.", flush=True)
 
 
 if __name__ == "__main__":
