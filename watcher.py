@@ -3,10 +3,8 @@ watcher.py
 ----------
 Startar bot.py och håller den igång.
 Kollar git var CHECK_INTERVAL sekunder – vid ny commit:
-  1. Stänger ner boten
-  2. Kör git pull
-  3. Installerar ev. nya beroenden
-  4. Startar om boten
+  - Om kärnfiler ändrades (bot.py, session_store.py m.fl.): stop → pull → pip install → start
+  - Om bara tool-filer ändrades: pull utan restart (tools laddas dynamiskt)
 
 Körs via start.bat istället för att anropa bot.py direkt.
 """
@@ -16,6 +14,9 @@ import sys
 import time
 
 CHECK_INTERVAL = 60  # sekunder mellan git-kontroller
+
+# Filer som kräver restart om de ändras
+RESTART_FILES = {"bot.py", "watcher.py", "session_store.py", "requirements.txt"}
 
 
 def _run(cmd: list[str], **kw) -> subprocess.CompletedProcess:
@@ -40,6 +41,15 @@ def git_pull() -> None:
 
 def pip_install() -> None:
     subprocess.run([sys.executable, "-m", "pip", "install", "-r", "requirements.txt", "-q"])
+
+
+def changed_files(old_hash: str, new_hash: str) -> set[str]:
+    r = _run(["git", "diff", "--name-only", old_hash, new_hash])
+    return set(r.stdout.strip().splitlines())
+
+
+def needs_restart(old_hash: str, new_hash: str) -> bool:
+    return bool(changed_files(old_hash, new_hash) & RESTART_FILES)
 
 
 def start_bot() -> subprocess.Popen:
@@ -78,10 +88,16 @@ def main() -> None:
             continue
 
         print(f"[watcher] Uppdatering hittad! {loc[:7]} → {rem[:7]}", flush=True)
-        stop_bot(proc)
+        restart = needs_restart(loc, rem)
         git_pull()
-        pip_install()
-        proc = start_bot()
+
+        if restart:
+            print("[watcher] Kärnfiler ändrade – startar om boten.", flush=True)
+            stop_bot(proc)
+            pip_install()
+            proc = start_bot()
+        else:
+            print("[watcher] Bara tool-filer uppdaterade – ingen restart.", flush=True)
 
 
 if __name__ == "__main__":

@@ -116,6 +116,33 @@
     ]
   },
   {
+    "name": "git_push",
+    "description": "Committar och pushar lokala ändringar till main. Anropas av agenten NÄR DEN ÄR KLAR med att bygga något – inte under pågående arbete.",
+    "entrypoint": "Tools/git_push.py",
+    "input_schema": {
+      "type": "object",
+      "properties": {
+        "message":  { "type": "string", "description": "Commit-meddelande, t.ex. 'Agent: ny blocket-scraper'" },
+        "files":    { "type": "array",  "items": { "type": "string" }, "description": "Specifika filer att adda. Lämna tom för att adda alla ändrade filer." }
+      },
+      "required": ["message"],
+      "additionalProperties": false
+    },
+    "output_schema": {
+      "type": "object",
+      "properties": {
+        "status": { "type": "string", "enum": ["pushed", "nothing_to_commit"] },
+        "commit": { "type": "string" },
+        "message": { "type": "string" },
+        "files":  { "type": "array", "items": { "type": "string" } }
+      }
+    },
+    "examples": [
+      { "input": { "message": "Agent: ny kvd-scraper" } },
+      { "input": { "message": "Agent: uppdaterat tools.json", "files": ["tools.json", "Tools/min_tool.py"] } }
+    ]
+  },
+  {
     "name": "agent_team",
     "description": "Tre permanenta sub-agenter för all app-byggande. Micke (Spec & QA Lead) skriver SPEC+TESTPLAN, Zack (Dev Lead) implementerar kod, Johan (QA) kör testplanen som svart låda. Loopen fortsätter tills Micke godkänner eller max_cycles nåtts. Ger tillgång till alla registrerade tools.",
     "entrypoint": "Tools/agent_team.py",
