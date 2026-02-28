@@ -572,43 +572,36 @@ def _format_feat_result(result: dict) -> str:
         f"Mapp     : {result['project_path']}",
     ]
 
-    if result.get("required_changes"):
-        lines.append("\nRequired Changes:")
+    # Uppgift vs resultat per cykel
+    cycle_summaries = result.get("cycle_summaries", [])
+    if cycle_summaries:
+        lines.append("\nResultat per cykel:")
+        for cs in cycle_summaries:
+            passed = cs.get("passed", 0)
+            total = cs.get("total", 0)
+            bugs = cs.get("bugs", [])
+            blockers = [b for b in bugs if b.get("severity") == "blocker"]
+            v = cs.get("verdict", "?")
+            v_sym = "✓" if v == "approve" else "~"
+            lines.append(f"  Cykel {cs['cycle']}: {passed}/{total} PASS  {len(bugs)} buggar ({len(blockers)} blocker)  [{v_sym}] {v}")
+            for rc in cs.get("required_changes", [])[:3]:
+                lines.append(f"    → {rc}")
+
+        # AC-jämförelse från sista cykeln
+        final = cycle_summaries[-1]
+        approved_ac = final.get("approved_ac", [])
+        failed_ac = final.get("failed_ac", [])
+        if approved_ac or failed_ac:
+            lines.append("\nAcceptance Criteria:")
+            for ac in approved_ac:
+                lines.append(f"  [✓] {ac}")
+            for ac in failed_ac:
+                lines.append(f"  [✗] {ac}")
+
+    if result.get("required_changes") and result["status"] != "approved":
+        lines.append("\nÅterstår att fixa:")
         for c in result["required_changes"][:5]:
             lines.append(f"  - {c}")
-
-    # Loggsummering: visa bara nyckel-händelser
-    KEY_EVENTS = {
-        "micke_spec_done", "zack_impl_done", "zack_question",
-        "micke_answer", "johan_test_done", "micke_review_done",
-        "step1_error", "step2_error", "step3_error", "step4_error",
-    }
-    log_lines = []
-    for entry in result.get("log", []):
-        if entry["event"] in KEY_EVENTS:
-            t = entry["time"][11:19]
-            ag = f"[{entry['agent']}] " if entry.get("agent") else ""
-            ev = entry["event"]
-            # Extra info per händelse
-            extras = []
-            if ev == "micke_spec_done":
-                extras.append(f"{entry.get('testcases', 0)} testfall")
-            elif ev == "zack_impl_done":
-                extras.append(f"{len(entry.get('files_written', []))} filer")
-            elif ev == "johan_test_done":
-                extras.append(f"{entry.get('passed', 0)} pass / {entry.get('failed', 0)+(entry.get('passed',0))} tot")
-                if entry.get("blockers"):
-                    extras.append(f"blockers: {entry['blockers']}")
-            elif ev == "micke_review_done":
-                extras.append(entry.get("verdict", ""))
-            elif ev == "zack_question":
-                extras.append(entry.get("unclear", "")[:60])
-            extra_str = "  ".join(extras)
-            log_lines.append(f"  [{t}] {ag}{ev}  {extra_str}")
-
-    if log_lines:
-        lines.append(f"\nLogg:")
-        lines.extend(log_lines)
 
     return "\n".join(lines)
 

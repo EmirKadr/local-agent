@@ -630,6 +630,83 @@ Fatta beslut: Approve eller Changes Required. Returnera JSON."""
 
 
 # --------------------------------------------------------------------------- #
+# Resultatjämförelse
+# --------------------------------------------------------------------------- #
+
+def _write_result_summary(
+    proj: Path,
+    feat_id: str,
+    task: str,
+    spec_data: dict,
+    cycle_summaries: list[dict],
+) -> None:
+    final = cycle_summaries[-1] if cycle_summaries else {}
+    verdict = final.get("verdict", "pending")
+    total_cycles = len(cycle_summaries)
+    verdict_label = "GODKÄND" if verdict == "approve" else "EJ GODKÄND"
+
+    lines = [
+        f"# Resultatjämförelse — {feat_id}",
+        "",
+        "## Uppgift",
+        task,
+        "",
+        f"## Slutresultat: {verdict_label} ({total_cycles} cykel{'er' if total_cycles != 1 else ''})",
+    ]
+
+    # Testfall: vad var målet vs utfall
+    testcases = spec_data.get("testcases", [])
+    if testcases:
+        final_results = {t.get("tc_id"): t for t in final.get("test_results", [])}
+        lines += ["", "## Testfall (mål vs utfall)"]
+        for tc in testcases:
+            tc_id = tc.get("id", "?")
+            cat = tc.get("category", "")
+            desc = tc.get("description", "")
+            result = final_results.get(tc_id)
+            if result:
+                sym = "✓" if result.get("pass") else "✗"
+            else:
+                sym = "?"
+            lines.append(f"- [{sym}] {tc_id} ({cat}): {desc}")
+
+    # Acceptance Criteria
+    approved_ac = final.get("approved_ac", [])
+    failed_ac = final.get("failed_ac", [])
+    if approved_ac or failed_ac:
+        lines += ["", "## Acceptance Criteria"]
+        for ac in approved_ac:
+            lines.append(f"- [✓] {ac}")
+        for ac in failed_ac:
+            lines.append(f"- [✗] {ac}")
+
+    # Per cykel
+    lines += ["", "## Per cykel"]
+    for cs in cycle_summaries:
+        passed = cs.get("passed", 0)
+        total = cs.get("total", 0)
+        bugs = cs.get("bugs", [])
+        blockers = [b for b in bugs if b.get("severity") == "blocker"]
+        v = cs.get("verdict", "?")
+        v_label = "Godkänd" if v == "approve" else "Changes Required"
+
+        lines += ["", f"### Cykel {cs['cycle']}"]
+        lines.append(f"- Tester: {passed}/{total} PASS")
+        if bugs:
+            bug_ids = ", ".join(
+                f"{b.get('id', '?')}({b.get('severity', '?')})" for b in bugs[:5]
+            )
+            lines.append(f"- Buggar: {bug_ids}" + (f"  [{len(blockers)} blocker]" if blockers else ""))
+        else:
+            lines.append("- Buggar: inga")
+        lines.append(f"- Micke: {v_label}")
+        for rc in cs.get("required_changes", [])[:5]:
+            lines.append(f"  → {rc}")
+
+    _write_files(proj, {"RESULT_SUMMARY.md": "\n".join(lines)})
+
+
+# --------------------------------------------------------------------------- #
 # Orkestrator – huvudloop
 # --------------------------------------------------------------------------- #
 
@@ -674,6 +751,7 @@ def run(
     # ─── Steg 2→4: Zack→Johan→Micke (loop) ─────────────────────────────── #
     verdict = "pending"
     required_changes: list[str] = []
+    cycle_summaries: list[dict] = []
 
     for cycle in range(1, max_cycles + 1):
         is_fix = cycle > 1
@@ -710,22 +788,40 @@ def run(
         required_changes = review_data.get("required_changes", [])
         summary = review_data.get("summary", "")
 
+        cycle_summaries.append({
+            "cycle": cycle,
+            "passed": passed,
+            "total": total,
+            "bugs": bugs,
+            "test_results": test_data.get("test_results", []),
+            "verdict": verdict,
+            "approved_ac": review_data.get("approved_ac", []),
+            "failed_ac": review_data.get("failed_ac", []),
+            "required_changes": required_changes,
+            "summary": summary,
+        })
+
         if verdict == "approve":
             notify(f"  GODKÄND av Micke! {summary[:100]}")
             break
         else:
             notify(f"  Changes Required: {', '.join(required_changes[:2])}")
 
+    # ─── Resultatjämförelse ──────────────────────────────────────────────── #
+    if cycle_summaries:
+        _write_result_summary(proj, feat_id, task, spec_data, cycle_summaries)
+
     # ─── Sammanställ artefakter ──────────────────────────────────────────── #
     _log(log, "done", feat_id=feat_id, verdict=verdict, cycles=cycle)
 
     artifacts = {
-        "SPEC.md":      _read_file(proj, "SPEC.md"),
-        "TESTPLAN.md":  _read_file(proj, "TESTPLAN.md"),
-        "DOD.md":       _read_file(proj, "DOD.md"),
-        "TESTREPORT.md": _read_file(proj, "TESTREPORT.md"),
-        "RUNBOOK.md":   _read_file(proj, "RUNBOOK.md"),
-        "CHANGELOG.md": _read_file(proj, "CHANGELOG.md"),
+        "SPEC.md":            _read_file(proj, "SPEC.md"),
+        "TESTPLAN.md":        _read_file(proj, "TESTPLAN.md"),
+        "DOD.md":             _read_file(proj, "DOD.md"),
+        "TESTREPORT.md":      _read_file(proj, "TESTREPORT.md"),
+        "RUNBOOK.md":         _read_file(proj, "RUNBOOK.md"),
+        "CHANGELOG.md":       _read_file(proj, "CHANGELOG.md"),
+        "RESULT_SUMMARY.md":  _read_file(proj, "RESULT_SUMMARY.md"),
     }
     src_files = _list_files(proj, "src")
     bug_files = _list_files(proj, "bugs")
@@ -740,6 +836,7 @@ def run(
         "src_files": src_files,
         "bug_files": bug_files,
         "required_changes": required_changes,
+        "cycle_summaries": cycle_summaries,
         "log": log,
     }
 
