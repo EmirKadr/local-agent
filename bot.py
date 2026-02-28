@@ -53,6 +53,105 @@ def _is_direct_blocket_fetch(text: str) -> bool:
     return any(tr in t for tr in DIRECT_BLOCKET_TRIGGERS) and not any(v in t for v in _BUILD_VERBS)
 
 
+# --- KVD: naturlig-språk-parsning av filter (deadline, märke, drivmedel, etc.) ---
+# Ordningen spelar roll: mer specifikt (ikväll) måste komma före generellt (idag)
+_KVD_DEADLINE_MAP: list[tuple[str, set]] = [
+    ("imorgon",      {"Imorgon"}),
+    ("morgondagens", {"Imorgon"}),
+    ("morgon",       {"Imorgon"}),
+    ("nästa dag",    {"Imorgon"}),
+    ("ikväll",       {"Ikväll"}),
+    ("kvällens",     {"Ikväll"}),
+    ("kväll",        {"Ikväll"}),
+    ("idag",         {"Idag", "Ikväll"}),
+    ("dagens",       {"Idag", "Ikväll"}),
+    ("denna dag",    {"Idag", "Ikväll"}),
+    ("igår",         {"Igår"}),
+    ("gårdagens",    {"Igår"}),
+    ("gårdag",       {"Igår"}),
+]
+
+_KVD_FUEL_MAP: list[tuple[str, str]] = [
+    ("diesel",     "Diesel"),
+    ("bensin",     "Bensin"),
+    ("elbil",      "El"),
+    ("elektrisk",  "El"),
+    (" el ",       "El"),
+    ("hybrid",     "Hybrid"),
+]
+
+_KVD_BRAND_SET = {
+    "audi", "bmw", "ford", "hyundai", "mazda", "mercedes",
+    "nissan", "opel", "peugeot", "porsche", "renault", "seat",
+    "skoda", "subaru", "tesla", "toyota", "volkswagen", "volvo",
+}
+
+_KVD_AUCTION_MAP: list[tuple[str, str]] = [
+    ("fast pris",  "BUY_NOW"),
+    ("köp nu",     "BUY_NOW"),
+    ("buy now",    "BUY_NOW"),
+    ("budgivning", "BIDDING"),
+    ("bidding",    "BIDDING"),
+    (" bud ",      "BIDDING"),
+]
+
+_KVD_GEAR_MAP: list[tuple[str, str]] = [
+    ("manuell",    "Manuell"),
+    ("automat",    "Automat"),
+    ("automatisk", "Automat"),
+]
+
+
+def _parse_kvd_input(text: str) -> dict:
+    """Parsar naturlig-språk-filter från ett KVD-meddelande.
+
+    Returnerar en dict lämplig att skicka som tool_input till kvd_scraper,
+    med optional-nycklarna: wanted_deadlines (list[str]) och url (str).
+    """
+    from urllib.parse import urlencode
+
+    # Padda med mellanslag för enkel ordsökning
+    t = " " + text.lower() + " "
+    result: dict = {}
+
+    # --- Deadline ---
+    wanted: set[str] = set()
+    for kw, deadlines in _KVD_DEADLINE_MAP:
+        if kw in t:
+            wanted |= deadlines
+            break  # första träff vinner
+    if wanted:
+        result["wanted_deadlines"] = list(wanted)
+
+    # --- URL-params ---
+    params: list[tuple[str, str]] = [("orderBy", "countdown_start_at")]
+
+    for kw, fuel in _KVD_FUEL_MAP:
+        if kw in t:
+            params.append(("fuel", fuel))
+            break
+
+    for brand in _KVD_BRAND_SET:
+        if f" {brand} " in t:
+            params.append(("brand", brand.capitalize()))
+
+    for kw, atype in _KVD_AUCTION_MAP:
+        if kw in t:
+            params.append(("auctionType", atype))
+            break
+
+    for kw, gear in _KVD_GEAR_MAP:
+        if kw in t:
+            params.append(("gearbox", gear))
+            break
+
+    # Skicka bara url om vi faktiskt har extra filter (mer än bara orderBy)
+    if len(params) > 1:
+        result["url"] = "https://www.kvd.se/begagnade-bilar?" + urlencode(params)
+
+    return result
+
+
 SCRAPE_BUILD_TRIGGERS = (
     "bygg scraper",
     "skapa scraper",
@@ -256,7 +355,12 @@ async def _handle_scrape_build(update: Update, url: str, task: str):
 
 async def _handle_direct_fetch(update: Update, tool_name: str, tool_input: dict):
     """Kör ett befintligt datahämtningsverktyg direkt – ingen agent_team behövs."""
-    await update.message.reply_text(f"Hämtar data med {tool_name}...")
+    if tool_name == "kvd_scraper":
+        dl = tool_input.get("wanted_deadlines")
+        label = "/".join(dl) if dl else "alla"
+        await update.message.reply_text(f"Hämtar KVD-auktioner ({label})...")
+    else:
+        await update.message.reply_text(f"Hämtar data med {tool_name}...")
     run_result = execute_tool(tool_name, tool_input)
     if not isinstance(run_result, dict) or not run_result.get("ok"):
         err = (run_result or {}).get("error", {})
@@ -878,7 +982,7 @@ async def on_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     # --- Direkta fetch: kör befintliga verktyg direkt (ingen agent_team behövs) ---
     if _is_direct_kvd_fetch(text):
-        await _handle_direct_fetch(update, "kvd_scraper", {})
+        await _handle_direct_fetch(update, "kvd_scraper", _parse_kvd_input(text))
         return
 
     if _is_direct_blocket_fetch(text):

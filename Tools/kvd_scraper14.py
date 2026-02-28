@@ -13,7 +13,9 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 import re
+import sys
 from dataclasses import dataclass, asdict
 from datetime import datetime
 from pathlib import Path
@@ -667,10 +669,12 @@ def main(argv: Optional[List[str]] = None) -> int:
 if __name__ == "__main__":
     if os.environ.get("LOCAL_AGENT_TOOL_MODE") == "1":
         import json as _json
-        data = _json.loads(sys.stdin.read())
-        query_url = data.get("url", "https://www.kvd.se/begagnade-bilar?orderBy=countdown_start_at")
-        headless  = bool(data.get("headless", True))
-        result    = scrape_kvd(query_url, headless=headless)
+        data          = _json.loads(sys.stdin.read())
+        query_url     = data.get("url", "https://www.kvd.se/begagnade-bilar?orderBy=countdown_start_at")
+        headless      = bool(data.get("headless", True))
+        raw_dl        = data.get("wanted_deadlines") or []
+        wanted_dl     = set(raw_dl) if raw_dl else set()
+        result        = scrape_kvd(query_url, headless=headless, wanted_deadlines=wanted_dl)
         output    = {
             "run_at":    result.run_at,
             "source":    result.source,
