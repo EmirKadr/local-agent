@@ -174,16 +174,38 @@ def _parse_kvd_input(text: str) -> dict:
 
     # --- Sort ---
     _KVD_SORT_OPTIONS: list[tuple[str, list]] = [
+        # Pris
         ("billigast",         [("orderBy", "price")]),
+        ("billigaste",        [("orderBy", "price")]),
         ("lägsta pris",       [("orderBy", "price")]),
+        ("lägst pris",        [("orderBy", "price")]),
         ("dyrast",            [("orderBy", "price"), ("sortOrder", "desc")]),
+        ("dyraste",           [("orderBy", "price"), ("sortOrder", "desc")]),
         ("högsta pris",       [("orderBy", "price"), ("sortOrder", "desc")]),
+        ("högst pris",        [("orderBy", "price"), ("sortOrder", "desc")]),
+        # År – specifika före generella
         ("nyast år",          [("orderBy", "year"), ("sortOrder", "desc")]),
+        ("nyaste år",         [("orderBy", "year"), ("sortOrder", "desc")]),
         ("äldst år",          [("orderBy", "year")]),
+        ("äldsta år",         [("orderBy", "year")]),
+        # Miltal – specifika före generella
+        ("minst miltal",      [("orderBy", "mileage")]),
+        ("lägst miltal",      [("orderBy", "mileage")]),
+        ("lägst mil",         [("orderBy", "mileage")]),
         ("minst mil",         [("orderBy", "mileage")]),
+        ("mest miltal",       [("orderBy", "mileage"), ("sortOrder", "desc")]),
+        ("högst miltal",      [("orderBy", "mileage"), ("sortOrder", "desc")]),
+        ("flest mil",         [("orderBy", "mileage"), ("sortOrder", "desc")]),
         ("mest mil",          [("orderBy", "mileage"), ("sortOrder", "desc")]),
+        # Publicering
         ("senast publicerad", [("orderBy", "published")]),
+        ("senast annonserad", [("orderBy", "published")]),
         ("nyast publicerad",  [("orderBy", "published"), ("sortOrder", "desc")]),
+        # Generella fallbacks (måste stå SIST)
+        ("nyast",             [("orderBy", "year"), ("sortOrder", "desc")]),
+        ("nyaste",            [("orderBy", "year"), ("sortOrder", "desc")]),
+        ("äldst",             [("orderBy", "year")]),
+        ("äldsta",            [("orderBy", "year")]),
     ]
     for kw, sort_params in _KVD_SORT_OPTIONS:
         if kw in t:
@@ -241,18 +263,47 @@ _BLOCKET_GEAR_MAP: list[tuple[str, str]] = [
 ]
 
 _BLOCKET_SORT_MAP: list[tuple[str, str]] = [
+    # Pris
     ("billigast",         "price"),
+    ("billigaste",        "price"),
     ("lägsta pris",       "price"),
+    ("lägst pris",        "price"),
+    ("lägst i pris",      "price"),
     ("dyrast",            "price_desc"),
+    ("dyraste",           "price_desc"),
     ("högsta pris",       "price_desc"),
+    ("högst pris",        "price_desc"),
+    ("högt i pris",       "price_desc"),
+    # År – specifika fraser före generella
     ("nyast år",          "year_desc"),
     ("nyast modell",      "year_desc"),
+    ("nyaste år",         "year_desc"),
+    ("nyaste modell",     "year_desc"),
     ("äldst år",          "year"),
+    ("äldsta år",         "year"),
+    ("äldst modell",      "year"),
+    # Datum/publicering
     ("nyast publicerad",  "date"),
+    ("nyaste publicerad", "date"),
     ("senast publicerad", "date"),
-    ("minst mil",         "mileage"),
+    ("senast annonserad", "date"),
+    ("ny annons",         "date"),
+    # Miltal – specifika fraser före generella
+    ("minst miltal",      "mileage"),
+    ("lägst miltal",      "mileage"),
     ("lägst mil",         "mileage"),
+    ("minst mil",         "mileage"),
+    ("lägsta miltal",     "mileage"),
+    ("mest miltal",       "mileage_desc"),
+    ("högst miltal",      "mileage_desc"),
+    ("flest mil",         "mileage_desc"),
     ("mest mil",          "mileage_desc"),
+    ("högsta miltal",     "mileage_desc"),
+    # Generella fallbacks (måste stå SIST)
+    ("nyast",             "year_desc"),
+    ("nyaste",            "year_desc"),
+    ("äldst",             "year"),
+    ("äldsta",            "year"),
 ]
 
 _BLOCKET_BODY_MAP: list[tuple[str, str]] = [
@@ -383,27 +434,70 @@ def _parse_blocket_input(text: str, session: dict | None = None) -> dict:
             if q_val:
                 params.append(("q", q_val.replace(" ", "+")))
 
-    # --- Pris ---
-    m = re.search(r'max\s*pris[: ]*(\d[\d\s]*)\s*(?:kr)?', t)
-    if m:
-        params.append(("price_to", m.group(1).replace(" ", "")))
-    m = re.search(r'min\s*pris[: ]*(\d[\d\s]*)\s*(?:kr)?', t)
-    if m:
-        params.append(("price_from", m.group(1).replace(" ", "")))
+    # --- Pris-övre (price_to) ---
+    if not any(k == "price_to" for k, _ in params):
+        for pat in [
+            r'max(?:imalt)?\s*pris[: ]*(\d[\d\s]*)',
+            r'(?:max(?:imalt)?|högst)\s+(\d[\d\s]*)\s*(?:kr|:-)',
+            r'under\s+(\d[\d\s]*)\s*(?:kr|:-)',
+            r'billigare\s+(?:än|an)\s+(\d[\d\s]*)',
+            r'kostar?\s+(?:max|högst|under)\s+(\d[\d\s]*)',
+            r'inte\s+mer\s+(?:än|an)\s+(\d[\d\s]*)',
+        ]:
+            m = re.search(pat, t)
+            if m:
+                params.append(("price_to", m.group(1).replace(" ", "")))
+                break
+
+    # --- Pris-undre (price_from) ---
+    if not any(k == "price_from" for k, _ in params):
+        for pat in [
+            r'min(?:st)?\s*pris[: ]*(\d[\d\s]*)',
+            r'(?:minst|lägst)\s+(\d[\d\s]*)\s*(?:kr|:-)',
+            r'mer\s+(?:än|an)\s+(\d[\d\s]*)\s*(?:kr|:-)',
+            r'dyrare\s+(?:än|an)\s+(\d[\d\s]*)',
+            r'kostar?\s+(?:minst|lägst)\s+(\d[\d\s]*)',
+            r'fr[åa]n\s+(\d[\d\s]*)\s*(?:kr|:-)',
+        ]:
+            m = re.search(pat, t)
+            if m:
+                params.append(("price_from", m.group(1).replace(" ", "")))
+                break
 
     # --- Årsmodell ---
-    if not any(k in ("year_from", "year_to") for k, _ in params):
-        m = re.search(r'fr[åa]n\s+(\d{4})', t)
-        if m:
-            params.append(("year_from", m.group(1)))
-        m = re.search(r'till\s+(\d{4})', t)
-        if m:
-            params.append(("year_to", m.group(1)))
+    if not any(k == "year_from" for k, _ in params):
+        for pat in [
+            r'fr[åa]n\s+(\d{4})',
+            r'nyare\s+(?:än|an)\s+(\d{4})',
+            r'(?:minst|lägst|fr[åa]n)\s+(?:år|årsmodell)\s+(\d{4})',
+        ]:
+            m = re.search(pat, t)
+            if m:
+                params.append(("year_from", m.group(1)))
+                break
 
-    # --- Miltal ---
-    m = re.search(r'(?:max|upp\s+till|under)\s+(\d[\d\s]*)\s+mil', t)
-    if m:
-        params.append(("mileage_to", m.group(1).replace(" ", "")))
+    if not any(k == "year_to" for k, _ in params):
+        for pat in [
+            r'till\s+(\d{4})',
+            r'äldre\s+(?:än|an)\s+(\d{4})',
+            r'(?:max|högst)\s+(?:år|årsmodell)\s+(\d{4})',
+        ]:
+            m = re.search(pat, t)
+            if m:
+                params.append(("year_to", m.group(1)))
+                break
+
+    # --- Miltal-övre (mileage_to) ---
+    if not any(k == "mileage_to" for k, _ in params):
+        m = re.search(r'(?:max(?:imalt)?|högst|under|upp\s+till)\s+(\d[\d\s]*)\s+mil', t)
+        if m:
+            params.append(("mileage_to", m.group(1).replace(" ", "")))
+
+    # --- Miltal-undre (mileage_from) ---
+    if not any(k == "mileage_from" for k, _ in params):
+        m = re.search(r'(?:minst|lägst|mer\s+(?:än|an)|fr[åa]n)\s+(\d[\d\s]*)\s+mil', t)
+        if m:
+            params.append(("mileage_from", m.group(1).replace(" ", "")))
 
     # --- Antal annonser ---
     m = re.search(r'(?:visa|hämta|ta\s+fram|lista)\s+(\d+)\s+(?:annonser?|bilar?|objekt)', t)

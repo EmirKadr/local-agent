@@ -118,6 +118,7 @@
     "name": "scraper_factory",
     "description": "Multi-agent ramverk: CoderAgent bygger en Python-scraper för given URL och uppgift, ReviewerAgent kör och granskar koden, loopen upprepas tills koden godkänns eller max iterationer nåtts. Returnerar slutkod + fullständig logg.",
     "entrypoint": "Tools/scraper_factory.py",
+    "timeout_seconds": 600,
     "input_schema": {
       "type": "object",
       "properties": {
@@ -179,6 +180,7 @@
     "name": "agent_team",
     "description": "Tre permanenta sub-agenter för all app-byggande. Micke (Spec & QA Lead) skriver SPEC+TESTPLAN, Zack (Dev Lead) implementerar kod, Johan (QA) kör testplanen som svart låda. Loopen fortsätter tills Micke godkänner eller max_cycles nåtts. Ger tillgång till alla registrerade tools.",
     "entrypoint": "Tools/agent_team.py",
+    "timeout_seconds": 1800,
     "input_schema": {
       "type": "object",
       "properties": {
