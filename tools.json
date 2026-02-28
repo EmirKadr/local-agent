@@ -152,7 +152,7 @@
         "task":       { "type": "string",  "description": "Uppgiftsbeskrivning, t.ex. 'Bygg en blocket-scraper som hämtar bilannonser'" },
         "url":        { "type": "string",  "description": "Relevant URL (valfri)" },
         "feat_id":    { "type": "string",  "description": "FEAT-ID, t.ex. FEAT-001 (skapas automatiskt om utelämnad)" },
-        "max_cycles": { "type": "integer", "default": 3, "description": "Max antal Micke→Zack→Johan-cyklar (default 3)" }
+        "max_cycles": { "type": "integer", "default": 4, "description": "Max antal Micke→Zack→Johan-cyklar (default 4)" }
       },
       "required": ["task"],
       "additionalProperties": false

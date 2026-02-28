@@ -637,7 +637,7 @@ def run(
     task: str,
     url: str | None = None,
     feat_id: str | None = None,
-    max_cycles: int = 3,
+    max_cycles: int = 4,
     progress_cb=None,   # callable(str) för progress-meddelanden
 ) -> dict:
     """
@@ -764,7 +764,7 @@ if __name__ == "__main__":
             task=data["task"],
             url=data.get("url"),
             feat_id=data.get("feat_id"),
-            max_cycles=int(data.get("max_cycles", 3)),
+            max_cycles=int(data.get("max_cycles", 4)),
         )
         print(json.dumps(result, ensure_ascii=False))
     else:
@@ -773,7 +773,7 @@ if __name__ == "__main__":
         parser.add_argument("task", help="Uppgiftsbeskrivning")
         parser.add_argument("--url", default=None, help="Relevant URL")
         parser.add_argument("--feat-id", default=None, help="FEAT-ID (skapas auto)")
-        parser.add_argument("--cycles", type=int, default=3, help="Max cyklar (default 3)")
+        parser.add_argument("--cycles", type=int, default=4, help="Max cyklar (default 4)")
         parser.add_argument("--json", action="store_true", help="Skriv ut hela JSON-resultatet")
         args = parser.parse_args()
 
