@@ -130,13 +130,13 @@ def main() -> None:
 
         print(f"[watcher] {ts()} Uppdatering hittad! {old_hash[:7]} → {new_hash[:7]}", flush=True)
 
+        stop_bot(proc)
         if needs_restart(old_hash, new_hash):
-            print(f"[watcher] {ts()} Kärnfiler ändrade – startar om boten.", flush=True)
-            stop_bot(proc)
+            print(f"[watcher] {ts()} Kärnfiler ändrade – kör pip install.", flush=True)
             pip_install()
-            proc = start_bot()
         else:
-            print(f"[watcher] {ts()} Bara tool-filer uppdaterade – ingen restart.", flush=True)
+            print(f"[watcher] {ts()} Tool-filer uppdaterade – startar om.", flush=True)
+        proc = start_bot()
 
 
 if __name__ == "__main__":
