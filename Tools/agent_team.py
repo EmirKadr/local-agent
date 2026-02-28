@@ -39,6 +39,7 @@ from pathlib import Path
 import requests
 
 PROJECTS_DIR = Path(__file__).parent / "agent_team" / "projects"
+_TOOLS_DIR   = Path(__file__).resolve().parent
 MAX_ZACK_QUESTIONS = 3       # Max Q-### per steg 2-iteration
 CODE_RUN_TIMEOUT  = 30       # sekunder per testkörning
 
@@ -47,12 +48,61 @@ CODE_RUN_TIMEOUT  = 30       # sekunder per testkörning
 # Tillgängliga tools (info till agenterna)
 # --------------------------------------------------------------------------- #
 
-TOOLS_INFO = """
-Tillgängliga tools (kan anropas via subprocess eller import):
-  web_inspector   – hämtar HTML från en URL, analyserar struktur och returnerar AI-analys
-  scraper_factory – multi-agent loop: CoderAgent bygger scraper, ReviewerAgent granskar
-  kvd_scraper     – hämtar KVD-auktionslistningar (idag/ikväll/imorgon)
-  runner.py       – kör vilken registrerad tool som helst via JSON på stdin
+TOOLS_INFO = f"""
+Tillgängliga tools – ANVÄND dessa istället för att bygga från scratch:
+
+━━━ web_inspector ━━━
+Hämtar HTML från en URL och returnerar AI-analys + sidstruktur (titlar, länkar, formulär).
+
+  # Direkt import (rekommenderat):
+  import sys; sys.path.insert(0, r"{_TOOLS_DIR}")
+  import web_inspector
+  result = web_inspector.run(url="https://example.com")
+  # result["ai_summary"]  – AI-beskrivning av sidan
+  # result["structure"]   – dict med headings, links, forms, scripts m.m.
+
+  # Via runner.py (subprocess):
+  import json, subprocess, sys
+  req = {{"tool": "web_inspector", "input": {{"url": "https://example.com"}}}}
+  proc = subprocess.run([sys.executable, r"{_TOOLS_DIR}/runner.py"],
+                        input=json.dumps(req), capture_output=True, text=True, timeout=60)
+  result = json.loads(proc.stdout)["result"]
+
+━━━ scraper_factory ━━━
+Bygger automatiskt en komplett Python-scraper (CoderAgent + ReviewerAgent-loop).
+Returnerar färdig, granskad scraper-kod + resultatet från testkörning.
+
+  # Direkt import (rekommenderat):
+  import sys; sys.path.insert(0, r"{_TOOLS_DIR}")
+  import scraper_factory
+  result = scraper_factory.run(
+      url="https://www.blocket.se/bilar",
+      task="Hämta alla bilannonser med titel, pris och länk",
+  )
+  # result["status"]      – "approved" | "max_iterations_reached" | "error"
+  # result["final_code"]  – färdig Python-scraper-kod som sträng
+  # result["out_file"]    – sökväg till sparad .py-fil (om write_file=True)
+
+  # Via runner.py (subprocess):
+  req = {{"tool": "scraper_factory", "input": {{"url": "https://...", "task": "Hämta..."}}}}
+  proc = subprocess.run([sys.executable, r"{_TOOLS_DIR}/runner.py"],
+                        input=json.dumps(req), capture_output=True, text=True, timeout=120)
+  result = json.loads(proc.stdout)["result"]
+
+━━━ kvd_scraper ━━━
+Hämtar KVD-auktionslistningar (idag/ikväll/imorgon).
+
+  import sys; sys.path.insert(0, r"{_TOOLS_DIR}")
+  import kvd_scraper14
+  result = kvd_scraper14.run()
+
+━━━ runner.py ━━━
+Generell dispatcher – kör vilken registrerad tool som helst via JSON på stdin.
+
+  req = {{"tool": "<tool_name>", "input": {{...}}}}
+  proc = subprocess.run([sys.executable, r"{_TOOLS_DIR}/runner.py"],
+                        input=json.dumps(req), capture_output=True, text=True)
+  out = json.loads(proc.stdout)  # {{"ok": true, "result": {{...}}}} eller {{"ok": false, "error": {{...}}}}
 """
 
 
@@ -67,6 +117,11 @@ Du är Micke, Spec & QA Lead. Du producerar SPEC och TESTPLAN INNAN någon kod s
 
 Du skriver INTE kod. Du kör INTE tester.
 Du är noggrann, strukturerad och kravdriven.
+
+VIKTIGT – om uppgiften involverar att hämta data från webben:
+- Specificera i SPEC att Zack SKA använda web_inspector och/eller scraper_factory
+- Zack ska INTE bygga en ny scraper från scratch när dessa verktyg redan finns
+- Ange i SPEC: vilken URL som ska användas och vad som ska hämtas – verktygen sköter resten
 
 Returnera ALLTID ett giltigt JSON-objekt (inget annat) med exakt dessa nycklar:
 {{
