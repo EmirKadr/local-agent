@@ -35,6 +35,24 @@ NEGATIVE_WORDS = {"nej", "no", "stop", "avbryt", "cancel"}
 
 # --- Scraper Factory ---
 _TOOLS_DIR = Path(__file__).parent / "Tools"
+# --- Direkta fetch-anrop: kör befintliga verktyg utan agent_team/scraper_factory ---
+_BUILD_VERBS = ("bygg", "skapa", "implementera", "utveckla", "skriv kod", "generera")
+
+DIRECT_KVD_TRIGGERS = ("kvd", "kvdbil", "kvd.se")
+DIRECT_BLOCKET_TRIGGERS = (
+    "bilannonser från blocket", "bilar från blocket", "annonser från blocket",
+    "blocket bilar", "blocket bil", "hämta blocket", "blocket.se/bilar",
+)
+
+def _is_direct_kvd_fetch(text: str) -> bool:
+    t = text.lower()
+    return any(tr in t for tr in DIRECT_KVD_TRIGGERS) and not any(v in t for v in _BUILD_VERBS)
+
+def _is_direct_blocket_fetch(text: str) -> bool:
+    t = text.lower()
+    return any(tr in t for tr in DIRECT_BLOCKET_TRIGGERS) and not any(v in t for v in _BUILD_VERBS)
+
+
 SCRAPE_BUILD_TRIGGERS = (
     "bygg scraper",
     "skapa scraper",
@@ -234,6 +252,30 @@ async def _handle_scrape_build(update: Update, url: str, task: str):
         except Exception:
             for part in split_telegram(result["final_code"]):
                 await update.message.reply_text(part)
+
+
+async def _handle_direct_fetch(update: Update, tool_name: str, tool_input: dict):
+    """Kör ett befintligt datahämtningsverktyg direkt – ingen agent_team behövs."""
+    await update.message.reply_text(f"Hämtar data med {tool_name}...")
+    run_result = execute_tool(tool_name, tool_input)
+    if not isinstance(run_result, dict) or not run_result.get("ok"):
+        err = (run_result or {}).get("error", {})
+        await update.message.reply_text(f"Fel: {err.get('message', str(run_result))[:500]}")
+        return
+
+    result = run_result.get("result", {})
+    items  = result.get("items", [])
+    source = result.get("source", tool_name)
+    lines  = [f"{len(items)} objekt från {source} ({result.get('run_at', '')[:16]}):"]
+    for item in items[:15]:
+        title = item.get("title") or item.get("name") or "?"
+        price = item.get("price_str") or item.get("leading_bid") or item.get("price") or "–"
+        url   = item.get("url") or item.get("link") or ""
+        lines.append(f"\n• {title}  |  {price}")
+        if url:
+            lines.append(f"  {url}")
+    for part in split_telegram("\n".join(lines)):
+        await update.message.reply_text(part)
 
 
 def should_activate_agent_mode(text: str) -> bool:
@@ -833,6 +875,16 @@ async def on_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     session.setdefault("step", 0)
     session.setdefault("mode", LLM_MODE)
     session.setdefault("agent_engine", DEFAULT_AGENT_ENGINE)
+
+    # --- Direkta fetch: kör befintliga verktyg direkt (ingen agent_team behövs) ---
+    if _is_direct_kvd_fetch(text):
+        await _handle_direct_fetch(update, "kvd_scraper", {})
+        return
+
+    if _is_direct_blocket_fetch(text):
+        blocket_url = _extract_url(text) or "https://www.blocket.se/bilar?sort=price_ascending"
+        await _handle_direct_fetch(update, "blocket_scraper", {"url": blocket_url})
+        return
 
     # --- Agent Team: detektera "bygg en app/verktyg..." ---
     if _is_feat_request(text):
