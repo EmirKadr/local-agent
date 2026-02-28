@@ -630,17 +630,17 @@ async def _handle_direct_fetch(update: Update, tool_name: str, tool_input: dict)
     for item in items:
         price = item.get("price_str") or item.get("leading_bid") or item.get("price") or "–"
         url   = item.get("url") or item.get("link") or ""
-        # Visa specs: år · bränsle · växellåda · miltal (istället för titel)
+        # Visa titel + specs: "Peugeot 3008, 2017, Bensin, Automat, 18 661 mil | 84 500 kr"
+        title = item.get("title") or item.get("name") or ""
         spec_parts = [
             item.get("year"),
             item.get("fuel"),
             item.get("gearbox"),
             item.get("mileage"),
         ]
-        spec = " · ".join(p for p in spec_parts if p)
-        if not spec:
-            spec = item.get("title") or item.get("name") or "?"
-        lines.append(f"\n• {spec}  |  {price}")
+        spec = ", ".join(p for p in spec_parts if p)
+        label = f"{title}, {spec}" if title and spec else (title or spec or "?")
+        lines.append(f"\n• {label}  |  {price}")
         if url:
             lines.append(f"  {url}")
     for part in split_telegram("\n".join(lines)):
