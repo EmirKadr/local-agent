@@ -635,4 +635,21 @@ def main(argv=None) -> int:
 
 
 if __name__ == "__main__":
-    raise SystemExit(main())
+    if os.environ.get("LOCAL_AGENT_TOOL_MODE") == "1":
+        import json as _json
+        data         = _json.loads(sys.stdin.read())
+        url          = data.get("url", "https://www.blocket.se/bilar?sort=price_ascending")
+        headless     = bool(data.get("headless", True))
+        target       = int(data.get("target", 15))
+        fetch_details = bool(data.get("fetch_details", False))
+        result       = scrape_blocket(url=url, headless=headless, target=target, fetch_details=fetch_details)
+        output       = {
+            "run_at":        result.run_at,
+            "source":        result.source,
+            "query_url":     result.query_url,
+            "total_scraped": result.total_scraped,
+            "items":         [asdict(item) for item in result.items],
+        }
+        print(_json.dumps(output, ensure_ascii=False))
+    else:
+        raise SystemExit(main())

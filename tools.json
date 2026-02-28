@@ -2,7 +2,7 @@
   {
     "name": "kvd_scraper",
     "description": "Scrapar KVD-listningar (idag/ikväll/imorgon) och hämtar detaljer per annons.",
-    "entrypoint": "Tools/kvd_scraper12.py",
+    "entrypoint": "Tools/kvd_scraper14.py",
     "input_schema": {
       "type": "object",
       "properties": {
@@ -31,8 +31,38 @@
     ]
   },
   {
+    "name": "blocket_scraper",
+    "description": "Hämtar bilannonser från Blocket. Returnerar titel, pris, miltal, länk m.m. per annons. Använd detta när användaren vill hämta/se bilannonser från Blocket – bygg INTE en ny scraper.",
+    "entrypoint": "Tools/blocket_scraper4.py",
+    "input_schema": {
+      "type": "object",
+      "properties": {
+        "url":          { "type": "string",  "description": "Blocket-URL, t.ex. https://www.blocket.se/bilar?sort=price_ascending" },
+        "headless":     { "type": "boolean", "default": true },
+        "target":       { "type": "integer", "default": 15, "description": "Antal annonser att hämta" },
+        "fetch_details":{ "type": "boolean", "default": false, "description": "Hämta detaljsida per annons (långsammare)" }
+      },
+      "additionalProperties": false
+    },
+    "output_schema": {
+      "type": "object",
+      "properties": {
+        "run_at":        { "type": "string" },
+        "source":        { "type": "string" },
+        "query_url":     { "type": "string" },
+        "total_scraped": { "type": "integer" },
+        "items":         { "type": "array", "items": { "type": "object" } }
+      },
+      "required": ["run_at", "source", "query_url", "total_scraped", "items"]
+    },
+    "examples": [
+      { "input": { "url": "https://www.blocket.se/bilar?sort=price_ascending", "target": 15 } },
+      { "input": { "url": "https://www.blocket.se/bilar/personbilar?freetext=bmw", "target": 10 } }
+    ]
+  },
+  {
     "name": "web_inspector",
-    "description": "Hämtar HTML från en URL, analyserar sidans struktur (titlar, formulär, länkar, navigering m.m.), fångar live XHR/fetch API-anrop via Playwright nätverksinterceptering, skannar JavaScript efter API-URL-mönster, och returnerar en AI-genererad förklaring. Detekterade API-endpoints kan sedan användas direkt av scraper_factory.",
+    "description": "Hämtar HTML från en URL, analyserar sidans struktur (titlar, formulär, länkar, navigering m.m.) och returnerar en AI-genererad förklaring av hur sidan fungerar och vad som finns där.",
     "entrypoint": "Tools/web_inspector.py",
     "input_schema": {
       "type": "object",
@@ -71,36 +101,10 @@
             "total_forms":      { "type": "integer" }
           }
         },
-        "api_calls": {
-          "type": "array",
-          "description": "Live-fångade XHR/fetch-anrop via Playwright nätverksinterceptering",
-          "items": {
-            "type": "object",
-            "properties": {
-              "method":           { "type": "string", "description": "HTTP-metod, t.ex. GET eller POST" },
-              "url":              { "type": "string", "description": "Endpoint-URL" },
-              "resource_type":    { "type": "string", "enum": ["xhr", "fetch"] },
-              "post_data":        { "type": ["string", "null"], "description": "Request body om POST" },
-              "response_preview": { "type": "string", "description": "Första 2000 tecken av JSON-svar" }
-            }
-          }
-        },
-        "api_patterns": {
-          "type": "array",
-          "description": "API-URL-mönster extraherade via statisk JS-analys (fetch(), axios, REST-paths)",
-          "items": {
-            "type": "object",
-            "properties": {
-              "source": { "type": "string", "description": "fetch() | axios | js_pattern" },
-              "url":    { "type": "string", "description": "Hittad URL eller path" },
-              "method": { "type": "string", "description": "HTTP-metod om känd" }
-            }
-          }
-        },
         "ai_summary": { "type": ["string", "null"] },
         "out_file":   { "type": ["string", "null"] }
       },
-      "required": ["url", "fetched_at", "fetch_method", "structure", "api_calls", "api_patterns"]
+      "required": ["url", "fetched_at", "fetch_method", "structure"]
     },
     "examples": [
       { "input": { "url": "https://www.blocket.se", "use_ai": true,  "write_file": false } },
@@ -142,6 +146,33 @@
     ]
   },
   {
+    "name": "git_push",
+    "description": "Committar och pushar lokala ändringar till main. Anropas av agenten NÄR DEN ÄR KLAR med att bygga något – inte under pågående arbete.",
+    "entrypoint": "Tools/git_push.py",
+    "input_schema": {
+      "type": "object",
+      "properties": {
+        "message":  { "type": "string", "description": "Commit-meddelande, t.ex. 'Agent: ny blocket-scraper'" },
+        "files":    { "type": "array",  "items": { "type": "string" }, "description": "Specifika filer att adda. Lämna tom för att adda alla ändrade filer." }
+      },
+      "required": ["message"],
+      "additionalProperties": false
+    },
+    "output_schema": {
+      "type": "object",
+      "properties": {
+        "status": { "type": "string", "enum": ["pushed", "nothing_to_commit"] },
+        "commit": { "type": "string" },
+        "message": { "type": "string" },
+        "files":  { "type": "array", "items": { "type": "string" } }
+      }
+    },
+    "examples": [
+      { "input": { "message": "Agent: ny kvd-scraper" } },
+      { "input": { "message": "Agent: uppdaterat tools.json", "files": ["tools.json", "Tools/min_tool.py"] } }
+    ]
+  },
+  {
     "name": "agent_team",
     "description": "Tre permanenta sub-agenter för all app-byggande. Micke (Spec & QA Lead) skriver SPEC+TESTPLAN, Zack (Dev Lead) implementerar kod, Johan (QA) kör testplanen som svart låda. Loopen fortsätter tills Micke godkänner eller max_cycles nåtts. Ger tillgång till alla registrerade tools.",
     "entrypoint": "Tools/agent_team.py",
@@ -151,7 +182,7 @@
         "task":       { "type": "string",  "description": "Uppgiftsbeskrivning, t.ex. 'Bygg en blocket-scraper som hämtar bilannonser'" },
         "url":        { "type": "string",  "description": "Relevant URL (valfri)" },
         "feat_id":    { "type": "string",  "description": "FEAT-ID, t.ex. FEAT-001 (skapas automatiskt om utelämnad)" },
-        "max_cycles": { "type": "integer", "default": 2, "description": "Max antal Micke→Zack→Johan-cyklar (default 2)" }
+        "max_cycles": { "type": "integer", "default": 4, "description": "Max antal Micke→Zack→Johan-cyklar (default 4)" }
       },
       "required": ["task"],
       "additionalProperties": false
@@ -173,8 +204,8 @@
       "required": ["feat_id", "task", "status", "cycles", "log"]
     },
     "examples": [
-      { "input": { "task": "Bygg en blocket-scraper för bilannonser", "url": "https://www.blocket.se/bilar" } },
-      { "input": { "task": "Skapa ett verktyg som hämtar väderprognoser från SMHI", "max_cycles": 3 } }
+      { "input": { "task": "Skapa ett verktyg som hämtar väderprognoser från SMHI", "max_cycles": 3 } },
+      { "input": { "task": "Bygg en prisbevakningstjänst som jämför bilannonser från flera källor" } }
     ]
   }
 ]

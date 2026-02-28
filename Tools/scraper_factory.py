@@ -58,24 +58,18 @@ CODE_RUN_TIMEOUT = 40   # sekunder per testkörning
 # --------------------------------------------------------------------------- #
 
 CODER_SYSTEM = """\
-Du är en expert Python-webbutvecklare specialiserad på webbskrapning och API-integration.
+Du är en expert Python-webbutvecklare specialiserad på webbskrapning.
 
 Din uppgift är att skriva en komplett, fristående Python-scraper för en specifik URL och uppgift.
-
-STRATEGI – välj i prioritetsordning:
-1. **API-FIRST**: Om API-endpoints hittats (XHR/fetch-anrop eller JS-mönster), FÖREDRA att anropa dessa API:er direkt med requests.get/post(). API-anrop ger renare data, är snabbare och robustare än HTML-parsing.
-2. **HYBRID**: Kombinera API-anrop och HTML-parsing om data finns på båda ställen.
-3. **HTML-SCRAPING**: Använd beautifulsoup4 om inga API:er hittats eller om API kräver auth du inte har.
 
 REGLER:
 - Använd ENBART dessa paket (redan installerade): requests, beautifulsoup4, playwright
 - Skriv fullständig, körbar Python-kod med en main()-funktion
 - Printa ALLTID det slutliga resultatet som giltig JSON till stdout (använd print(json.dumps(...)))
 - Hantera nätverksfel och saknade HTML-element med try/except
-- Sätt User-Agent-header och relevanta headers (Accept: application/json etc.) för API-anrop
+- Sätt User-Agent-header för requests-anrop
 - Ingen interaktiv input, inga hårdkodade sökvägar
 - Skriv KUN Python-kod – INGEN markdown-wrapper, INGA förklaringar utanför kommentarer i koden
-- Om du kallar ett API direkt: inkludera URL, method och ett exempel på svarsdatan i en kommentar
 """
 
 REVIEWER_SYSTEM = """\
@@ -163,8 +157,6 @@ def run_coder(
     site_info: dict,
     prev_feedback: str | None,
     iteration: int,
-    api_calls: list | None = None,
-    api_patterns: list | None = None,
 ) -> str:
     """Anropar CoderAgent → returnerar ren Python-kod."""
 
@@ -184,28 +176,6 @@ def run_coder(
 
     ai_analysis = site_info.get("ai_summary") or "Ingen AI-analys tillgänglig."
 
-    # API-sektion: prioritera live-fångade anrop, komplettera med JS-mönster
-    api_block = ""
-    all_api_calls = list(api_calls or [])
-    all_api_patterns = list(api_patterns or [])
-
-    if all_api_calls:
-        api_json = json.dumps(all_api_calls[:12], ensure_ascii=False, indent=2)
-        api_block += (
-            f"\n\n=== DETEKTERADE API-ANROP (live-fångade XHR/fetch) ===\n"
-            f"{api_json}\n"
-            "INSTRUKTION: Anropa dessa endpoints direkt med requests istället för att scrapa HTML!"
-        )
-    if all_api_patterns:
-        pat_json = json.dumps(all_api_patterns[:12], ensure_ascii=False, indent=2)
-        api_block += (
-            f"\n\n=== API-MÖNSTER FRÅN JS-KOD ===\n"
-            f"{pat_json}\n"
-            "INSTRUKTION: Undersök dessa URL-mönster – de kan vara REST-endpoints du kan anropa direkt."
-        )
-    if not api_block:
-        api_block = "\n\n(Inga API-endpoints detekterade – använd HTML-scraping.)"
-
     feedback_block = ""
     if prev_feedback:
         feedback_block = (
@@ -222,10 +192,9 @@ ITERATION: {iteration}
 {structure_preview}
 
 === AI-ANALYS AV SIDAN ===
-{ai_analysis}{api_block}{feedback_block}
+{ai_analysis}{feedback_block}
 
 Skriv nu en komplett Python-scraper som löser uppgiften.
-Om API-endpoints finns ovan – ANVÄND DEM DIREKT med requests.
 KUN Python-kod, ingen markdown."""
 
     raw = _call_claude(CODER_SYSTEM, prompt, max_tokens=4096)
@@ -351,35 +320,18 @@ def run(
     # ---------------------------------------------------------------------- #
     # Steg 1: Analysera webbsidan med web_inspector
     # ---------------------------------------------------------------------- #
-    api_calls: list = []
-    api_patterns: list = []
     print(f"[scraper_factory] Analyserar {url} ...", file=sys.stderr)
     log.append(_log("web_inspector_start", url=url))
     try:
         inspection = web_inspector.run(url, headless=True, use_ai=True, write_file=False)
         site_info = inspection["structure"]
         site_info["ai_summary"] = inspection.get("ai_summary")
-        api_calls   = inspection.get("api_calls", [])
-        api_patterns = inspection.get("api_patterns", [])
         log.append(_log(
             "web_inspector_done",
             title=site_info.get("title"),
             fetch_method=inspection["fetch_method"],
             total_links=site_info.get("total_links"),
-            api_calls_found=len(api_calls),
-            api_patterns_found=len(api_patterns),
         ))
-        if api_calls:
-            print(
-                f"[scraper_factory] {len(api_calls)} live API-anrop detekterade – "
-                f"CoderAgent instrueras att föredra API-scraping.",
-                file=sys.stderr,
-            )
-        if api_patterns:
-            print(
-                f"[scraper_factory] {len(api_patterns)} API-URL-mönster hittade via JS-scanning.",
-                file=sys.stderr,
-            )
     except Exception as e:
         log.append(_log("web_inspector_failed", error=str(e)))
         return {
@@ -408,10 +360,7 @@ def run(
         log.append(_log("coder_start", iteration=iteration))
         print(f"[scraper_factory]   CoderAgent bygger kod...", file=sys.stderr)
         try:
-            code = run_coder(
-                url, task, site_info, prev_feedback, iteration,
-                api_calls=api_calls, api_patterns=api_patterns,
-            )
+            code = run_coder(url, task, site_info, prev_feedback, iteration)
             log.append(_log(
                 "coder_done",
                 iteration=iteration,

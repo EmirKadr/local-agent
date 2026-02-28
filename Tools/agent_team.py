@@ -39,6 +39,7 @@ from pathlib import Path
 import requests
 
 PROJECTS_DIR = Path(__file__).parent / "agent_team" / "projects"
+_TOOLS_DIR   = Path(__file__).resolve().parent
 MAX_ZACK_QUESTIONS = 3       # Max Q-### per steg 2-iteration
 CODE_RUN_TIMEOUT  = 30       # sekunder per testkörning
 
@@ -47,12 +48,68 @@ CODE_RUN_TIMEOUT  = 30       # sekunder per testkörning
 # Tillgängliga tools (info till agenterna)
 # --------------------------------------------------------------------------- #
 
-TOOLS_INFO = """
-Tillgängliga tools (kan anropas via subprocess eller import):
-  web_inspector   – hämtar HTML från en URL, analyserar struktur och returnerar AI-analys
-  scraper_factory – multi-agent loop: CoderAgent bygger scraper, ReviewerAgent granskar
-  kvd_scraper     – hämtar KVD-auktionslistningar (idag/ikväll/imorgon)
-  runner.py       – kör vilken registrerad tool som helst via JSON på stdin
+TOOLS_INFO = f"""
+# Tillgängliga tools
+
+## BYGG-TOOLS – för att skapa ny funktionalitet
+
+━━━ web_inspector ━━━
+Analyserar en webbsidas HTML-struktur. Används för att FÖRSTÅ en sida innan man bygger mot den.
+
+  import sys; sys.path.insert(0, r"{_TOOLS_DIR}")
+  import web_inspector
+  result = web_inspector.run(url="https://example.com")
+  # result["ai_summary"]  – AI-beskrivning av sidan
+  # result["structure"]   – headings, links, forms, scripts m.m.
+
+━━━ scraper_factory ━━━
+Bygger en ny Python-scraper automatiskt (CoderAgent + ReviewerAgent-loop).
+Används NÄR det inte redan finns ett färdigt datahämtningsverktyg.
+
+  import sys; sys.path.insert(0, r"{_TOOLS_DIR}")
+  import scraper_factory
+  result = scraper_factory.run(url="https://example.com", task="Hämta alla X med pris och länk")
+  # result["status"]      – "approved" | "max_iterations_reached" | "error"
+  # result["final_code"]  – färdig Python-kod som sträng
+  # result["out_file"]    – sökväg till sparad .py-fil
+
+## DATAHÄMTNINGS-TOOLS – färdiga, kör direkt
+
+━━━ blocket_scraper ━━━
+Hämtar bilannonser från Blocket. Finns redan – behöver INTE byggas om.
+
+  import json, subprocess, sys
+  req = {{"tool": "blocket_scraper", "input": {{"url": "https://www.blocket.se/bilar?sort=price_ascending", "target": 15}}}}
+  proc = subprocess.run([sys.executable, r"{_TOOLS_DIR}/runner.py"],
+                        input=json.dumps(req), capture_output=True, text=True, timeout=120)
+  result = json.loads(proc.stdout)["result"]
+  # result["items"] – lista med title, price_str, url, mileage m.m.
+
+━━━ kvd_scraper ━━━
+Hämtar KVD-auktionslistningar. Finns redan – behöver INTE byggas om.
+
+  req = {{"tool": "kvd_scraper", "input": {{}}}}
+  proc = subprocess.run([sys.executable, r"{_TOOLS_DIR}/runner.py"],
+                        input=json.dumps(req), capture_output=True, text=True, timeout=120)
+  result = json.loads(proc.stdout)["result"]
+  # result["items"] – lista med title, leading_bid, deadline_text, url m.m.
+
+## DELADE TOOLS – används för båda ändamål
+
+━━━ runner.py ━━━
+Kör vilken registrerad tool som helst via JSON på stdin.
+
+  req = {{"tool": "<tool_name>", "input": {{...}}}}
+  proc = subprocess.run([sys.executable, r"{_TOOLS_DIR}/runner.py"],
+                        input=json.dumps(req), capture_output=True, text=True)
+  out = json.loads(proc.stdout)  # {{"ok": true, "result": {{...}}}} eller {{"ok": false, "error": {{...}}}}
+
+━━━ git_push ━━━
+Committar och pushar färdig kod till main. Kör detta när implementationen är klar.
+
+  req = {{"tool": "git_push", "input": {{"message": "Agent: beskrivning av vad som byggts"}}}}
+  proc = subprocess.run([sys.executable, r"{_TOOLS_DIR}/runner.py"],
+                        input=json.dumps(req), capture_output=True, text=True)
 """
 
 
@@ -67,6 +124,11 @@ Du är Micke, Spec & QA Lead. Du producerar SPEC och TESTPLAN INNAN någon kod s
 
 Du skriver INTE kod. Du kör INTE tester.
 Du är noggrann, strukturerad och kravdriven.
+
+VIKTIGT – om uppgiften involverar att hämta data från webben:
+- Specificera i SPEC att Zack SKA använda web_inspector och/eller scraper_factory
+- Zack ska INTE bygga en ny scraper från scratch när dessa verktyg redan finns
+- Ange i SPEC: vilken URL som ska användas och vad som ska hämtas – verktygen sköter resten
 
 Returnera ALLTID ett giltigt JSON-objekt (inget annat) med exakt dessa nycklar:
 {{
@@ -630,6 +692,83 @@ Fatta beslut: Approve eller Changes Required. Returnera JSON."""
 
 
 # --------------------------------------------------------------------------- #
+# Resultatjämförelse
+# --------------------------------------------------------------------------- #
+
+def _write_result_summary(
+    proj: Path,
+    feat_id: str,
+    task: str,
+    spec_data: dict,
+    cycle_summaries: list[dict],
+) -> None:
+    final = cycle_summaries[-1] if cycle_summaries else {}
+    verdict = final.get("verdict", "pending")
+    total_cycles = len(cycle_summaries)
+    verdict_label = "GODKÄND" if verdict == "approve" else "EJ GODKÄND"
+
+    lines = [
+        f"# Resultatjämförelse — {feat_id}",
+        "",
+        "## Uppgift",
+        task,
+        "",
+        f"## Slutresultat: {verdict_label} ({total_cycles} cykel{'er' if total_cycles != 1 else ''})",
+    ]
+
+    # Testfall: vad var målet vs utfall
+    testcases = spec_data.get("testcases", [])
+    if testcases:
+        final_results = {t.get("tc_id"): t for t in final.get("test_results", [])}
+        lines += ["", "## Testfall (mål vs utfall)"]
+        for tc in testcases:
+            tc_id = tc.get("id", "?")
+            cat = tc.get("category", "")
+            desc = tc.get("description", "")
+            result = final_results.get(tc_id)
+            if result:
+                sym = "✓" if result.get("pass") else "✗"
+            else:
+                sym = "?"
+            lines.append(f"- [{sym}] {tc_id} ({cat}): {desc}")
+
+    # Acceptance Criteria
+    approved_ac = final.get("approved_ac", [])
+    failed_ac = final.get("failed_ac", [])
+    if approved_ac or failed_ac:
+        lines += ["", "## Acceptance Criteria"]
+        for ac in approved_ac:
+            lines.append(f"- [✓] {ac}")
+        for ac in failed_ac:
+            lines.append(f"- [✗] {ac}")
+
+    # Per cykel
+    lines += ["", "## Per cykel"]
+    for cs in cycle_summaries:
+        passed = cs.get("passed", 0)
+        total = cs.get("total", 0)
+        bugs = cs.get("bugs", [])
+        blockers = [b for b in bugs if b.get("severity") == "blocker"]
+        v = cs.get("verdict", "?")
+        v_label = "Godkänd" if v == "approve" else "Changes Required"
+
+        lines += ["", f"### Cykel {cs['cycle']}"]
+        lines.append(f"- Tester: {passed}/{total} PASS")
+        if bugs:
+            bug_ids = ", ".join(
+                f"{b.get('id', '?')}({b.get('severity', '?')})" for b in bugs[:5]
+            )
+            lines.append(f"- Buggar: {bug_ids}" + (f"  [{len(blockers)} blocker]" if blockers else ""))
+        else:
+            lines.append("- Buggar: inga")
+        lines.append(f"- Micke: {v_label}")
+        for rc in cs.get("required_changes", [])[:5]:
+            lines.append(f"  → {rc}")
+
+    _write_files(proj, {"RESULT_SUMMARY.md": "\n".join(lines)})
+
+
+# --------------------------------------------------------------------------- #
 # Orkestrator – huvudloop
 # --------------------------------------------------------------------------- #
 
@@ -637,7 +776,7 @@ def run(
     task: str,
     url: str | None = None,
     feat_id: str | None = None,
-    max_cycles: int = 2,
+    max_cycles: int = 4,
     progress_cb=None,   # callable(str) för progress-meddelanden
 ) -> dict:
     """
@@ -674,6 +813,7 @@ def run(
     # ─── Steg 2→4: Zack→Johan→Micke (loop) ─────────────────────────────── #
     verdict = "pending"
     required_changes: list[str] = []
+    cycle_summaries: list[dict] = []
 
     for cycle in range(1, max_cycles + 1):
         is_fix = cycle > 1
@@ -710,22 +850,40 @@ def run(
         required_changes = review_data.get("required_changes", [])
         summary = review_data.get("summary", "")
 
+        cycle_summaries.append({
+            "cycle": cycle,
+            "passed": passed,
+            "total": total,
+            "bugs": bugs,
+            "test_results": test_data.get("test_results", []),
+            "verdict": verdict,
+            "approved_ac": review_data.get("approved_ac", []),
+            "failed_ac": review_data.get("failed_ac", []),
+            "required_changes": required_changes,
+            "summary": summary,
+        })
+
         if verdict == "approve":
             notify(f"  GODKÄND av Micke! {summary[:100]}")
             break
         else:
             notify(f"  Changes Required: {', '.join(required_changes[:2])}")
 
+    # ─── Resultatjämförelse ──────────────────────────────────────────────── #
+    if cycle_summaries:
+        _write_result_summary(proj, feat_id, task, spec_data, cycle_summaries)
+
     # ─── Sammanställ artefakter ──────────────────────────────────────────── #
     _log(log, "done", feat_id=feat_id, verdict=verdict, cycles=cycle)
 
     artifacts = {
-        "SPEC.md":      _read_file(proj, "SPEC.md"),
-        "TESTPLAN.md":  _read_file(proj, "TESTPLAN.md"),
-        "DOD.md":       _read_file(proj, "DOD.md"),
-        "TESTREPORT.md": _read_file(proj, "TESTREPORT.md"),
-        "RUNBOOK.md":   _read_file(proj, "RUNBOOK.md"),
-        "CHANGELOG.md": _read_file(proj, "CHANGELOG.md"),
+        "SPEC.md":            _read_file(proj, "SPEC.md"),
+        "TESTPLAN.md":        _read_file(proj, "TESTPLAN.md"),
+        "DOD.md":             _read_file(proj, "DOD.md"),
+        "TESTREPORT.md":      _read_file(proj, "TESTREPORT.md"),
+        "RUNBOOK.md":         _read_file(proj, "RUNBOOK.md"),
+        "CHANGELOG.md":       _read_file(proj, "CHANGELOG.md"),
+        "RESULT_SUMMARY.md":  _read_file(proj, "RESULT_SUMMARY.md"),
     }
     src_files = _list_files(proj, "src")
     bug_files = _list_files(proj, "bugs")
@@ -740,6 +898,7 @@ def run(
         "src_files": src_files,
         "bug_files": bug_files,
         "required_changes": required_changes,
+        "cycle_summaries": cycle_summaries,
         "log": log,
     }
 
@@ -764,7 +923,7 @@ if __name__ == "__main__":
             task=data["task"],
             url=data.get("url"),
             feat_id=data.get("feat_id"),
-            max_cycles=int(data.get("max_cycles", 2)),
+            max_cycles=int(data.get("max_cycles", 4)),
         )
         print(json.dumps(result, ensure_ascii=False))
     else:
@@ -773,7 +932,7 @@ if __name__ == "__main__":
         parser.add_argument("task", help="Uppgiftsbeskrivning")
         parser.add_argument("--url", default=None, help="Relevant URL")
         parser.add_argument("--feat-id", default=None, help="FEAT-ID (skapas auto)")
-        parser.add_argument("--cycles", type=int, default=2, help="Max cyklar (default 2)")
+        parser.add_argument("--cycles", type=int, default=4, help="Max cyklar (default 4)")
         parser.add_argument("--json", action="store_true", help="Skriv ut hela JSON-resultatet")
         args = parser.parse_args()
 

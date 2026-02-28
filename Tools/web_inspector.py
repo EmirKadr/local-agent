@@ -62,101 +62,19 @@ def _fetch_requests(url: str) -> str:
     return resp.text
 
 
-def _fetch_playwright(url: str, headless: bool) -> tuple[str, list[dict]]:
-    """Hämtar sida med Playwright och fångar XHR/fetch API-anrop via nätverksinterceptering."""
+def _fetch_playwright(url: str, headless: bool) -> str:
     from playwright.sync_api import sync_playwright
-
-    captured: list[dict] = []
-    response_bodies: dict[str, str] = {}
-
     with sync_playwright() as p:
         browser = p.chromium.launch(headless=headless)
-        context = browser.new_context(
-            user_agent=(
-                "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 "
-                "(KHTML, like Gecko) Chrome/122.0 Safari/537.36"
-            )
-        )
-        page = context.new_page()
-
-        def on_request(req):
-            if req.resource_type in ("xhr", "fetch"):
-                captured.append({
-                    "method": req.method,
-                    "url": req.url[:600],
-                    "resource_type": req.resource_type,
-                    "post_data": (req.post_data or "")[:400] or None,
-                })
-
-        def on_response(resp):
-            if resp.request.resource_type in ("xhr", "fetch"):
-                try:
-                    ct = resp.headers.get("content-type", "")
-                    if "json" in ct or "graphql" in ct:
-                        body = resp.body().decode("utf-8", errors="replace")[:2000]
-                        response_bodies[resp.url] = body
-                except Exception:
-                    pass
-
-        page.on("request", on_request)
-        page.on("response", on_response)
-
-        try:
-            page.goto(url, wait_until="networkidle", timeout=30_000)
-            page.wait_for_timeout(2000)
-        except Exception:
-            pass
-
+        page = browser.new_page()
+        page.goto(url, wait_until="networkidle", timeout=30_000)
         html = page.content()
         browser.close()
-
-    api_calls = []
-    for call in captured[:30]:
-        body = response_bodies.get(call["url"])
-        if body:
-            call["response_preview"] = body
-        api_calls.append(call)
-
-    return html, api_calls
+    return html
 
 
-def _scan_scripts_for_api_patterns(html: str) -> list[dict]:
-    """Skannar inbäddade <script>-taggar efter API-URL-mönster (fetch, axios, REST-paths)."""
-    soup = BeautifulSoup(html, "html.parser")
-    patterns: list[dict] = []
-    seen: set[str] = set()
-
-    fetch_re   = re.compile(r'fetch\s*\(\s*[`"\']([^`"\']{5,300})[`"\']', re.I)
-    axios_re   = re.compile(r'axios\.(get|post|put|delete|patch)\s*\(\s*[`"\']([^`"\']{5,300})[`"\']', re.I)
-    api_url_re = re.compile(
-        r'[`"\'](\/?(?:api|v\d+|graphql|rest|data|search|query|json)[^`"\']{0,200})[`"\']', re.I
-    )
-
-    for script in soup.find_all("script"):
-        code = script.string or ""
-        if len(code) < 20:
-            continue
-        for m in fetch_re.finditer(code):
-            u = m.group(1).strip()
-            if u not in seen and not u.startswith("//"):
-                seen.add(u)
-                patterns.append({"source": "fetch()", "url": u})
-        for m in axios_re.finditer(code):
-            method, u = m.group(1).upper(), m.group(2).strip()
-            if u not in seen:
-                seen.add(u)
-                patterns.append({"source": "axios", "method": method, "url": u})
-        for m in api_url_re.finditer(code):
-            u = m.group(1).strip()
-            if u not in seen and len(u) > 5:
-                seen.add(u)
-                patterns.append({"source": "js_pattern", "url": u})
-
-    return patterns[:25]
-
-
-def fetch_html(url: str, headless: bool = True) -> tuple[str, str, list]:
-    """Returnerar (html, metod, api_calls). api_calls är tom lista om requests används."""
+def fetch_html(url: str, headless: bool = True) -> tuple[str, str]:
+    """Returnerar (html, metod)."""
     try:
         html = _fetch_requests(url)
         # Om sidan verkar vara en tom SPA (litet body-innehåll), använd playwright
@@ -164,11 +82,11 @@ def fetch_html(url: str, headless: bool = True) -> tuple[str, str, list]:
         body_text = soup.get_text(separator=" ").strip()
         if len(body_text) < 200:
             raise ValueError("Sidan verkar kräva JavaScript – byter till Playwright")
-        return html, "requests", []
+        return html, "requests"
     except Exception as e:
         print(f"[requests] {e} → försöker med Playwright...", file=sys.stderr)
-        html, api_calls = _fetch_playwright(url, headless)
-        return html, "playwright", api_calls
+        html = _fetch_playwright(url, headless)
+        return html, "playwright"
 
 
 # --------------------------------------------------------------------------- #
@@ -290,28 +208,13 @@ def _lm_chat(messages: list[dict], max_tokens: int = 2048) -> str:
     return resp.json()["choices"][0]["message"]["content"]
 
 
-def ai_analyze(
-    url: str,
-    structure: dict,
-    html: str,
-    api_calls: list | None = None,
-    api_patterns: list | None = None,
-) -> str:
+def ai_analyze(url: str, structure: dict, html: str) -> str:
     # Kondensera HTML för kontext
     html_preview = html[:MAX_HTML_CHARS]
     if len(html) > MAX_HTML_CHARS:
         html_preview += f"\n... [trunkerad, {len(html):,} tecken totalt]"
 
     structure_json = json.dumps(structure, ensure_ascii=False, indent=2)
-
-    # Bygg API-sektion om endpoints hittats
-    api_section = ""
-    if api_calls:
-        api_json = json.dumps(api_calls[:15], ensure_ascii=False, indent=2)
-        api_section += f"\n\n--- DETEKTERADE API-ANROP (XHR/fetch, live-fångade) ---\n{api_json}"
-    if api_patterns:
-        pat_json = json.dumps(api_patterns[:15], ensure_ascii=False, indent=2)
-        api_section += f"\n\n--- API-MÖNSTER (statisk JS-analys) ---\n{pat_json}"
 
     messages = [
         {
@@ -327,13 +230,12 @@ def ai_analyze(
 3. **Vilka funktioner finns** – formulär, sökfält, knappar, inloggning, etc.
 4. **Teknisk stack (om möjligt)** – ramverk, CMS, tredjepartstjänster
 5. **Innehåll** – vad för information/produkter/tjänster erbjuds
-6. **API-endpoints** – om API-anrop hittats, förklara vad de gör och hur de kan användas direkt
-7. **Intressanta observationer** – t.ex. cookiebanner, tracking, SEO-signaler
+6. **Intressanta observationer** – t.ex. cookiebanner, tracking, SEO-signaler
 
 URL: {url}
 
 --- PARSAD STRUKTUR ---
-{structure_json}{api_section}
+{structure_json}
 
 --- HTML-FÖRHANDSVISNING ---
 {html_preview}""",
@@ -370,25 +272,16 @@ def run(
         url = "https://" + url
 
     print(f"[web_inspector] Hämtar {url} ...", file=sys.stderr)
-    html, method, api_calls = fetch_html(url, headless=headless)
-    print(
-        f"[web_inspector] Hämtad via {method} ({len(html):,} tecken HTML, "
-        f"{len(api_calls)} API-anrop fångade)",
-        file=sys.stderr,
-    )
+    html, method = fetch_html(url, headless=headless)
+    print(f"[web_inspector] Hämtad via {method} ({len(html):,} tecken HTML)", file=sys.stderr)
 
     structure = parse_structure(html, base_url=url)
-
-    # Statisk JS-scanning (körs alltid, oavsett hämtmetod)
-    api_patterns = _scan_scripts_for_api_patterns(html)
-    if api_patterns:
-        print(f"[web_inspector] {len(api_patterns)} API-mönster hittade via JS-scanning", file=sys.stderr)
 
     ai_summary = None
     if use_ai:
         print("[web_inspector] Analyserar med Claude ...", file=sys.stderr)
         try:
-            ai_summary = ai_analyze(url, structure, html, api_calls=api_calls, api_patterns=api_patterns)
+            ai_summary = ai_analyze(url, structure, html)
         except Exception as e:
             ai_summary = f"[AI-analys misslyckades: {e}]"
             print(f"[web_inspector] {ai_summary}", file=sys.stderr)
@@ -398,8 +291,6 @@ def run(
         "fetched_at": datetime.now().isoformat(),
         "fetch_method": method,
         "structure": structure,
-        "api_calls": api_calls,
-        "api_patterns": api_patterns,
         "ai_summary": ai_summary,
         "out_file": None,
     }
@@ -457,24 +348,6 @@ def main():
             for form in s["forms"]:
                 fields = ", ".join(f["type"] for f in form["fields"])
                 print(f"  • {form['method']} {form['action'] or '/'} [{fields}]")
-
-        api_calls = result.get("api_calls", [])
-        api_patterns = result.get("api_patterns", [])
-        if api_calls:
-            print(f"\nAPI-anrop (live-fångade, {len(api_calls)} st):")
-            for call in api_calls[:10]:
-                preview = f"  [{call['method']}] {call['url']}"
-                if call.get("post_data"):
-                    preview += f"  body={call['post_data'][:60]}"
-                if call.get("response_preview"):
-                    preview += f"  → {call['response_preview'][:80]}"
-                print(preview)
-        if api_patterns:
-            print(f"\nAPI-mönster (JS-analys, {len(api_patterns)} st):")
-            for p in api_patterns[:10]:
-                method = p.get("method", "GET") if p["source"] != "js_pattern" else ""
-                tag = f"[{method}] " if method else ""
-                print(f"  {tag}{p['url']}  ({p['source']})")
 
         if result["ai_summary"]:
             print(f"\n{'─'*60}")

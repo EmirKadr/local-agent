@@ -35,6 +35,24 @@ NEGATIVE_WORDS = {"nej", "no", "stop", "avbryt", "cancel"}
 
 # --- Scraper Factory ---
 _TOOLS_DIR = Path(__file__).parent / "Tools"
+# --- Direkta fetch-anrop: kör befintliga verktyg utan agent_team/scraper_factory ---
+_BUILD_VERBS = ("bygg", "skapa", "implementera", "utveckla", "skriv kod", "generera")
+
+DIRECT_KVD_TRIGGERS = ("kvd", "kvdbil", "kvd.se")
+DIRECT_BLOCKET_TRIGGERS = (
+    "bilannonser från blocket", "bilar från blocket", "annonser från blocket",
+    "blocket bilar", "blocket bil", "hämta blocket", "blocket.se/bilar",
+)
+
+def _is_direct_kvd_fetch(text: str) -> bool:
+    t = text.lower()
+    return any(tr in t for tr in DIRECT_KVD_TRIGGERS) and not any(v in t for v in _BUILD_VERBS)
+
+def _is_direct_blocket_fetch(text: str) -> bool:
+    t = text.lower()
+    return any(tr in t for tr in DIRECT_BLOCKET_TRIGGERS) and not any(v in t for v in _BUILD_VERBS)
+
+
 SCRAPE_BUILD_TRIGGERS = (
     "bygg scraper",
     "skapa scraper",
@@ -234,6 +252,30 @@ async def _handle_scrape_build(update: Update, url: str, task: str):
         except Exception:
             for part in split_telegram(result["final_code"]):
                 await update.message.reply_text(part)
+
+
+async def _handle_direct_fetch(update: Update, tool_name: str, tool_input: dict):
+    """Kör ett befintligt datahämtningsverktyg direkt – ingen agent_team behövs."""
+    await update.message.reply_text(f"Hämtar data med {tool_name}...")
+    run_result = execute_tool(tool_name, tool_input)
+    if not isinstance(run_result, dict) or not run_result.get("ok"):
+        err = (run_result or {}).get("error", {})
+        await update.message.reply_text(f"Fel: {err.get('message', str(run_result))[:500]}")
+        return
+
+    result = run_result.get("result", {})
+    items  = result.get("items", [])
+    source = result.get("source", tool_name)
+    lines  = [f"{len(items)} objekt från {source} ({result.get('run_at', '')[:16]}):"]
+    for item in items[:15]:
+        title = item.get("title") or item.get("name") or "?"
+        price = item.get("price_str") or item.get("leading_bid") or item.get("price") or "–"
+        url   = item.get("url") or item.get("link") or ""
+        lines.append(f"\n• {title}  |  {price}")
+        if url:
+            lines.append(f"  {url}")
+    for part in split_telegram("\n".join(lines)):
+        await update.message.reply_text(part)
 
 
 def should_activate_agent_mode(text: str) -> bool:
@@ -572,43 +614,36 @@ def _format_feat_result(result: dict) -> str:
         f"Mapp     : {result['project_path']}",
     ]
 
-    if result.get("required_changes"):
-        lines.append("\nRequired Changes:")
+    # Uppgift vs resultat per cykel
+    cycle_summaries = result.get("cycle_summaries", [])
+    if cycle_summaries:
+        lines.append("\nResultat per cykel:")
+        for cs in cycle_summaries:
+            passed = cs.get("passed", 0)
+            total = cs.get("total", 0)
+            bugs = cs.get("bugs", [])
+            blockers = [b for b in bugs if b.get("severity") == "blocker"]
+            v = cs.get("verdict", "?")
+            v_sym = "✓" if v == "approve" else "~"
+            lines.append(f"  Cykel {cs['cycle']}: {passed}/{total} PASS  {len(bugs)} buggar ({len(blockers)} blocker)  [{v_sym}] {v}")
+            for rc in cs.get("required_changes", [])[:3]:
+                lines.append(f"    → {rc}")
+
+        # AC-jämförelse från sista cykeln
+        final = cycle_summaries[-1]
+        approved_ac = final.get("approved_ac", [])
+        failed_ac = final.get("failed_ac", [])
+        if approved_ac or failed_ac:
+            lines.append("\nAcceptance Criteria:")
+            for ac in approved_ac:
+                lines.append(f"  [✓] {ac}")
+            for ac in failed_ac:
+                lines.append(f"  [✗] {ac}")
+
+    if result.get("required_changes") and result["status"] != "approved":
+        lines.append("\nÅterstår att fixa:")
         for c in result["required_changes"][:5]:
             lines.append(f"  - {c}")
-
-    # Loggsummering: visa bara nyckel-händelser
-    KEY_EVENTS = {
-        "micke_spec_done", "zack_impl_done", "zack_question",
-        "micke_answer", "johan_test_done", "micke_review_done",
-        "step1_error", "step2_error", "step3_error", "step4_error",
-    }
-    log_lines = []
-    for entry in result.get("log", []):
-        if entry["event"] in KEY_EVENTS:
-            t = entry["time"][11:19]
-            ag = f"[{entry['agent']}] " if entry.get("agent") else ""
-            ev = entry["event"]
-            # Extra info per händelse
-            extras = []
-            if ev == "micke_spec_done":
-                extras.append(f"{entry.get('testcases', 0)} testfall")
-            elif ev == "zack_impl_done":
-                extras.append(f"{len(entry.get('files_written', []))} filer")
-            elif ev == "johan_test_done":
-                extras.append(f"{entry.get('passed', 0)} pass / {entry.get('failed', 0)+(entry.get('passed',0))} tot")
-                if entry.get("blockers"):
-                    extras.append(f"blockers: {entry['blockers']}")
-            elif ev == "micke_review_done":
-                extras.append(entry.get("verdict", ""))
-            elif ev == "zack_question":
-                extras.append(entry.get("unclear", "")[:60])
-            extra_str = "  ".join(extras)
-            log_lines.append(f"  [{t}] {ag}{ev}  {extra_str}")
-
-    if log_lines:
-        lines.append(f"\nLogg:")
-        lines.extend(log_lines)
 
     return "\n".join(lines)
 
@@ -840,6 +875,16 @@ async def on_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     session.setdefault("step", 0)
     session.setdefault("mode", LLM_MODE)
     session.setdefault("agent_engine", DEFAULT_AGENT_ENGINE)
+
+    # --- Direkta fetch: kör befintliga verktyg direkt (ingen agent_team behövs) ---
+    if _is_direct_kvd_fetch(text):
+        await _handle_direct_fetch(update, "kvd_scraper", {})
+        return
+
+    if _is_direct_blocket_fetch(text):
+        blocket_url = _extract_url(text) or "https://www.blocket.se/bilar?sort=price_ascending"
+        await _handle_direct_fetch(update, "blocket_scraper", {"url": blocket_url})
+        return
 
     # --- Agent Team: detektera "bygg en app/verktyg..." ---
     if _is_feat_request(text):

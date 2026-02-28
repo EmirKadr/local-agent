@@ -665,4 +665,18 @@ def main(argv: Optional[List[str]] = None) -> int:
 
 
 if __name__ == "__main__":
-    raise SystemExit(main())
+    if os.environ.get("LOCAL_AGENT_TOOL_MODE") == "1":
+        import json as _json
+        data = _json.loads(sys.stdin.read())
+        query_url = data.get("url", "https://www.kvd.se/begagnade-bilar?orderBy=countdown_start_at")
+        headless  = bool(data.get("headless", True))
+        result    = scrape_kvd(query_url, headless=headless)
+        output    = {
+            "run_at":    result.run_at,
+            "source":    result.source,
+            "query_url": result.query_url,
+            "items":     [asdict(item) for item in result.items],
+        }
+        print(_json.dumps(output, ensure_ascii=False))
+    else:
+        raise SystemExit(main())
