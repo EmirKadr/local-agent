@@ -36,6 +36,8 @@ import tempfile
 from datetime import datetime
 from pathlib import Path
 
+import requests
+
 PROJECTS_DIR = Path(__file__).parent / "agent_team" / "projects"
 MAX_ZACK_QUESTIONS = 3       # Max Q-### per steg 2-iteration
 CODE_RUN_TIMEOUT  = 30       # sekunder per testkörning
@@ -226,15 +228,24 @@ def _log(log: list, event: str, agent: str = "", **kw) -> None:
 
 
 def _call_claude(system: str, user_msg: str, max_tokens: int = 6144) -> str:
-    import anthropic
-    client = anthropic.Anthropic()
-    msg = client.messages.create(
-        model="claude-sonnet-4-6",
-        max_tokens=max_tokens,
-        system=system,
-        messages=[{"role": "user", "content": user_msg}],
+    """Anropar lokal LLM via OpenAI-kompatibelt API."""
+    lm_base  = os.environ.get("OPENAI_API_BASE", "http://127.0.0.1:1234/v1")
+    lm_model = os.environ.get("LM_MODEL", "qwen/qwen3-vl-8b")
+    resp = requests.post(
+        f"{lm_base}/chat/completions",
+        json={
+            "model": lm_model,
+            "messages": [
+                {"role": "system", "content": system},
+                {"role": "user",   "content": user_msg},
+            ],
+            "max_tokens": max_tokens,
+            "temperature": 0.2,
+        },
+        timeout=300,
     )
-    return msg.content[0].text.strip()
+    resp.raise_for_status()
+    return resp.json()["choices"][0]["message"]["content"].strip()
 
 
 def _parse_json(text: str) -> dict:

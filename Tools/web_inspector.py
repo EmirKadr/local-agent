@@ -4,7 +4,7 @@ web_inspector.py
 Hämtar HTML från en given URL, analyserar sidans struktur och
 returnerar en förklaring av hur sidan fungerar och vad som finns där.
 
-Beroenden: requests, beautifulsoup4, anthropic
+Beroenden: requests, beautifulsoup4
 Playwright används automatiskt som fallback om sidan kräver JavaScript.
 
 Input:
@@ -195,11 +195,20 @@ def parse_structure(html: str, base_url: str) -> dict:
 # AI-analys med Claude
 # --------------------------------------------------------------------------- #
 
+def _lm_chat(messages: list[dict], max_tokens: int = 2048) -> str:
+    """Anropar lokal LLM via OpenAI-kompatibelt API."""
+    lm_base  = os.environ.get("OPENAI_API_BASE", "http://127.0.0.1:1234/v1")
+    lm_model = os.environ.get("LM_MODEL", "qwen/qwen3-vl-8b")
+    resp = requests.post(
+        f"{lm_base}/chat/completions",
+        json={"model": lm_model, "messages": messages, "max_tokens": max_tokens, "temperature": 0.2},
+        timeout=120,
+    )
+    resp.raise_for_status()
+    return resp.json()["choices"][0]["message"]["content"]
+
+
 def ai_analyze(url: str, structure: dict, html: str) -> str:
-    import anthropic
-
-    client = anthropic.Anthropic()
-
     # Kondensera HTML för kontext
     html_preview = html[:MAX_HTML_CHARS]
     if len(html) > MAX_HTML_CHARS:
@@ -207,7 +216,14 @@ def ai_analyze(url: str, structure: dict, html: str) -> str:
 
     structure_json = json.dumps(structure, ensure_ascii=False, indent=2)
 
-    prompt = f"""Du är en webbutvecklare och UX-analytiker. Analysera nedanstående webbsida och förklara:
+    messages = [
+        {
+            "role": "system",
+            "content": "Du är en webbutvecklare och UX-analytiker. Svara på svenska med tydliga rubriker.",
+        },
+        {
+            "role": "user",
+            "content": f"""Analysera nedanstående webbsida och förklara:
 
 1. **Vad sidan handlar om** – syfte och målgrupp
 2. **Hur sidan är uppbyggd** – layout, sektioner, navigering
@@ -222,16 +238,10 @@ URL: {url}
 {structure_json}
 
 --- HTML-FÖRHANDSVISNING ---
-{html_preview}
-
-Svara på svenska med tydliga rubriker per punkt."""
-
-    message = client.messages.create(
-        model="claude-sonnet-4-6",
-        max_tokens=2048,
-        messages=[{"role": "user", "content": prompt}],
-    )
-    return message.content[0].text
+{html_preview}""",
+        },
+    ]
+    return _lm_chat(messages, max_tokens=2048)
 
 
 # --------------------------------------------------------------------------- #
