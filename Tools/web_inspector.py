@@ -350,4 +350,16 @@ def main():
 
 
 if __name__ == "__main__":
-    main()
+    if os.environ.get("LOCAL_AGENT_TOOL_MODE") == "1":
+        # Runner-läge: läs JSON från stdin, skriv JSON till stdout
+        import json as _json
+        data = _json.loads(sys.stdin.read())
+        result = run(
+            url=data["url"],
+            headless=bool(data.get("headless", True)),
+            use_ai=bool(data.get("use_ai", True)),
+            write_file=bool(data.get("write_file", False)),
+        )
+        print(_json.dumps(result, ensure_ascii=False))
+    else:
+        main()

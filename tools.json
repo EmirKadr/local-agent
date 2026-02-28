@@ -80,5 +80,39 @@
       { "input": { "url": "https://www.blocket.se", "use_ai": true,  "write_file": false } },
       { "input": { "url": "https://example.com",   "use_ai": false, "write_file": true  } }
     ]
+  },
+  {
+    "name": "scraper_factory",
+    "description": "Multi-agent ramverk: CoderAgent bygger en Python-scraper för given URL och uppgift, ReviewerAgent kör och granskar koden, loopen upprepas tills koden godkänns eller max iterationer nåtts. Returnerar slutkod + fullständig logg.",
+    "entrypoint": "Tools/scraper_factory.py",
+    "input_schema": {
+      "type": "object",
+      "properties": {
+        "url":            { "type": "string",  "description": "URL att scrapa, t.ex. https://www.blocket.se" },
+        "task":           { "type": "string",  "description": "Vad ska hämtas, t.ex. 'alla bilannonser med pris och länk'" },
+        "max_iterations": { "type": "integer", "default": 3, "description": "Max antal byggrundor (default 3)" },
+        "write_file":     { "type": "boolean", "default": true, "description": "Spara slutkoden som .py-fil" }
+      },
+      "required": ["url", "task"],
+      "additionalProperties": false
+    },
+    "output_schema": {
+      "type": "object",
+      "properties": {
+        "url":        { "type": "string" },
+        "task":       { "type": "string" },
+        "status":     { "type": "string", "enum": ["approved", "max_iterations_reached", "error"] },
+        "iterations": { "type": "integer" },
+        "final_code": { "type": ["string", "null"] },
+        "final_score":{ "type": "integer" },
+        "log":        { "type": "array" },
+        "out_file":   { "type": ["string", "null"] }
+      },
+      "required": ["url", "task", "status", "iterations", "log"]
+    },
+    "examples": [
+      { "input": { "url": "https://www.blocket.se/bilar", "task": "hämta alla bilannonser med titel, pris och länk" } },
+      { "input": { "url": "https://www.hemnet.se",        "task": "hämta bostadsannonser med adress, pris och boyta", "max_iterations": 2 } }
+    ]
   }
 ]
