@@ -1,5 +1,7 @@
+import asyncio
 import json
 import os
+import re
 import subprocess
 import sys
 from importlib.util import find_spec
@@ -13,7 +15,7 @@ from session_store import load_session, reset_session, save_session, session_sum
 
 # --- LM Studio ---
 LM_STUDIO_BASE = os.environ.get("OPENAI_API_BASE", "http://127.0.0.1:1234/v1")
-MODEL_ID = os.environ.get("LM_MODEL", "qwen/qwen3-vl-8b")
+MODEL_ID = os.environ.get("LM_MODEL", "meta-llama/llama-3.3-70b-instruct")
 
 # --- Local runner/tooling ---
 RUNNER_PATH = Path(os.environ.get("RUNNER_PATH", r"C:\local-agent\Tools\runner.py"))
@@ -30,6 +32,45 @@ AGENT_ENGINES = {"local", "autogen"}
 
 AFFIRMATIVE_WORDS = {"ja", "japp", "yes", "ok", "okej", "kör", "go", "retry", "igen"}
 NEGATIVE_WORDS = {"nej", "no", "stop", "avbryt", "cancel"}
+
+# --- Scraper Factory ---
+_TOOLS_DIR = Path(__file__).parent / "Tools"
+SCRAPE_BUILD_TRIGGERS = (
+    "bygg scraper",
+    "skapa scraper",
+    "bygg ett skript",
+    "bygg skript",
+    "skriv kod",
+    "skriv ett skript",
+    "kod som hämtar",
+    "kod som scrapar",
+    "skript som hämtar",
+    "skript som scrapar",
+    "scrapa",
+    "scrapa sidan",
+    "hämta data från",
+    "hämta information från",
+    "gå in på",
+)
+
+# --- Agent Team (Micke + Zack + Johan) ---
+FEAT_TRIGGERS = (
+    "bygg en app",
+    "bygg ett verktyg",
+    "skapa en app",
+    "skapa ett verktyg",
+    "implementera",
+    "utveckla",
+    "feat:",
+    "feature:",
+    "ny feature",
+    "ny funktion",
+)
+
+_URL_RE = re.compile(
+    r"https?://[^\s\"'<>]+|"
+    r"(?<!\w)(?:[a-zA-Z0-9-]+\.)+(?:se|com|org|net|io|dev|fi|no|dk|nu|app|ai)[^\s\"'<>]*"
+)
 
 AGENT_TRIGGER_WORDS = (
     "kör",
@@ -106,6 +147,93 @@ def _extract_direct_tool_call(text: str, tools: list[dict]) -> tuple[str, dict] 
 
             return name, direct_input
     return None
+
+
+def _extract_url(text: str) -> str | None:
+    """Extrahera första URL ur texten."""
+    m = _URL_RE.search(text or "")
+    if not m:
+        return None
+    url = m.group(0).rstrip(".,!?):")
+    if not url.startswith("http"):
+        url = "https://" + url
+    return url
+
+
+def _is_scraper_build_request(text: str) -> bool:
+    """Returnerar True om meddelandet handlar om att bygga/skriva en scraper."""
+    t = (text or "").strip().lower()
+    return any(trigger in t for trigger in SCRAPE_BUILD_TRIGGERS)
+
+
+def _format_build_result(result: dict) -> str:
+    """Formaterar scraper_factory-resultatet för Telegram."""
+    status_emoji = "✓" if result["status"] == "approved" else "~"
+    lines = [
+        f"[{status_emoji}] Scraper-bygge klart",
+        f"URL: {result['url']}",
+        f"Status: {result['status']}",
+        f"Iterationer: {result['iterations']}",
+        f"Slutpoäng: {result['final_score']}/10",
+    ]
+
+    if result.get("out_file"):
+        lines.append(f"Sparad: {result['out_file']}")
+
+    # Loggsummering
+    events = [e["event"] for e in result.get("log", [])]
+    lines.append(f"\nLogg ({len(events)} haendelser):")
+    for entry in result.get("log", []):
+        ev = entry["event"]
+        t = entry["time"][11:19]
+        if ev in ("coder_done", "reviewer_done", "sandbox_run_done",
+                   "loop_approved", "loop_revise", "done", "web_inspector_done"):
+            extra = {k: v for k, v in entry.items()
+                     if k not in ("time", "event") and v is not None}
+            extra_str = "  ".join(
+                f"{k}={v}" for k, v in list(extra.items())[:4]
+                if not isinstance(v, (list, dict))
+            )
+            lines.append(f"  [{t}] {ev}  {extra_str}")
+
+    return "\n".join(lines)
+
+
+async def _handle_scrape_build(update: Update, url: str, task: str):
+    """Kör scraper_factory asynkront och svarar i Telegram."""
+    await update.message.reply_text(
+        f"Startar multi-agent scraper-bygge...\n"
+        f"URL: {url}\n"
+        f"Uppgift: {task[:200]}\n\n"
+        "CoderAgent + ReviewerAgent arbetar. Det tar 1-3 minuter."
+    )
+
+    # Importera scraper_factory lazily för att undvika startup-delay
+    sys.path.insert(0, str(_TOOLS_DIR))
+    import scraper_factory
+
+    loop = asyncio.get_event_loop()
+    try:
+        result = await loop.run_in_executor(
+            None,
+            lambda: scraper_factory.run(url=url, task=task, max_iterations=3, write_file=True),
+        )
+    except Exception as e:
+        await update.message.reply_text(f"Fel vid scraper-bygge: {e}")
+        return
+
+    summary = _format_build_result(result)
+    for part in split_telegram(summary):
+        await update.message.reply_text(part)
+
+    # Skicka slutkoden separat om den finns
+    if result.get("final_code"):
+        code_msg = f"```python\n{result['final_code'][:3800]}\n```"
+        try:
+            await update.message.reply_text(code_msg, parse_mode="Markdown")
+        except Exception:
+            for part in split_telegram(result["final_code"]):
+                await update.message.reply_text(part)
 
 
 def should_activate_agent_mode(text: str) -> bool:
@@ -319,8 +447,17 @@ def _autogen_available() -> bool:
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(
-        "OK. Default-läge: vanlig LLM-chat.\n"
-        "• /agent => växla till agentläge (plan/run/observation/final)\n"
+        "OK. Default-läge: vanlig LLM-chat.\n\n"
+        "AGENT-TEAM (Micke + Zack + Johan):\n"
+        "• /feat [url] <uppgift> – full SPEC→IMPL→TEST→REVIEW-loop\n"
+        "  Exempel: /feat blocket.se Bygg scraper för bilannonser\n"
+        "  Eller skriv: 'bygg en app som...' / 'implementera...'\n\n"
+        "SCRAPER-BYGGE (snabb, utan spec):\n"
+        "• /build <url> [uppgift] – CoderAgent + ReviewerAgent\n"
+        "  Exempel: /build blocket.se/bilar hämta annonser med pris\n"
+        "  Eller skriv: 'bygg scraper för blocket.se som hämtar...'\n\n"
+        "AGENTLÄGE:\n"
+        "• /agent => växla till agentläge\n"
         "• /llm => växla tillbaka till vanlig LLM\n"
         "• /mode visar nuvarande läge\n"
         "• /engine [local|autogen] visar/sätter agent-engine\n"
@@ -417,6 +554,158 @@ async def run_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     result = call_runner(payload)
     for part in split_telegram(_compact_json(summarize_observation(result), max_len=3200)):
         await update.message.reply_text(part)
+
+
+def _is_feat_request(text: str) -> bool:
+    """Returnerar True om meddelandet handlar om att bygga en ny feature/app (utan URL-krav)."""
+    t = (text or "").strip().lower()
+    return any(trigger in t for trigger in FEAT_TRIGGERS)
+
+
+def _format_feat_result(result: dict) -> str:
+    """Formaterar agent_team-resultatet för Telegram."""
+    verdict_sym = "✓" if result["status"] == "approved" else "~"
+    lines = [
+        f"[{verdict_sym}] Agent-team klart — {result['feat_id']}",
+        f"Status   : {result['status']}",
+        f"Cyklar   : {result['cycles']}",
+        f"Mapp     : {result['project_path']}",
+    ]
+
+    if result.get("required_changes"):
+        lines.append("\nRequired Changes:")
+        for c in result["required_changes"][:5]:
+            lines.append(f"  - {c}")
+
+    # Loggsummering: visa bara nyckel-händelser
+    KEY_EVENTS = {
+        "micke_spec_done", "zack_impl_done", "zack_question",
+        "micke_answer", "johan_test_done", "micke_review_done",
+        "step1_error", "step2_error", "step3_error", "step4_error",
+    }
+    log_lines = []
+    for entry in result.get("log", []):
+        if entry["event"] in KEY_EVENTS:
+            t = entry["time"][11:19]
+            ag = f"[{entry['agent']}] " if entry.get("agent") else ""
+            ev = entry["event"]
+            # Extra info per händelse
+            extras = []
+            if ev == "micke_spec_done":
+                extras.append(f"{entry.get('testcases', 0)} testfall")
+            elif ev == "zack_impl_done":
+                extras.append(f"{len(entry.get('files_written', []))} filer")
+            elif ev == "johan_test_done":
+                extras.append(f"{entry.get('passed', 0)} pass / {entry.get('failed', 0)+(entry.get('passed',0))} tot")
+                if entry.get("blockers"):
+                    extras.append(f"blockers: {entry['blockers']}")
+            elif ev == "micke_review_done":
+                extras.append(entry.get("verdict", ""))
+            elif ev == "zack_question":
+                extras.append(entry.get("unclear", "")[:60])
+            extra_str = "  ".join(extras)
+            log_lines.append(f"  [{t}] {ag}{ev}  {extra_str}")
+
+    if log_lines:
+        lines.append(f"\nLogg:")
+        lines.extend(log_lines)
+
+    return "\n".join(lines)
+
+
+async def _handle_feat(update: Update, task: str, url: str | None = None):
+    """Kör agent_team asynkront (Micke + Zack + Johan) och svarar i Telegram."""
+    msg = await update.message.reply_text(
+        f"Startar agent-team...\n"
+        f"Uppgift: {task[:200]}\n\n"
+        f"Micke skriver spec → Zack bygger → Johan testar → Micke reviewar.\n"
+        f"Det tar 3-8 minuter beroende på uppgiften."
+    )
+
+    sys.path.insert(0, str(_TOOLS_DIR))
+    import agent_team
+
+    # Progress-callback som skickar uppdateringar till Telegram
+    sent_steps: list[str] = []
+
+    def progress_cb(step_msg: str):
+        sent_steps.append(step_msg)
+
+    loop = asyncio.get_event_loop()
+    try:
+        result = await loop.run_in_executor(
+            None,
+            lambda: agent_team.run(task=task, url=url, max_cycles=2, progress_cb=progress_cb),
+        )
+    except Exception as e:
+        await update.message.reply_text(f"Fel vid agent-körning: {e}")
+        return
+
+    summary = _format_feat_result(result)
+    for part in split_telegram(summary):
+        await update.message.reply_text(part)
+
+    # Skicka main.py om den finns
+    src_main = result.get("src_files", {}).get("main.py", "")
+    if src_main:
+        code_msg = f"```python\n{src_main[:3800]}\n```"
+        try:
+            await update.message.reply_text(code_msg, parse_mode="Markdown")
+        except Exception:
+            for part in split_telegram(src_main):
+                await update.message.reply_text(part)
+
+
+async def build_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """
+    /build <url> [task description]
+    Exempel: /build https://blocket.se/bilar hämta alla bilannonser med pris
+    """
+    raw = (update.message.text or "").strip()
+    parts = raw.split(" ", 2)   # ["/build", "<url>", "<task...>"]
+    if len(parts) < 2:
+        await update.message.reply_text(
+            "Användning: /build <url> [beskrivning av vad som ska hämtas]\n"
+            "Exempel: /build https://blocket.se/bilar hämta alla bilannonser med pris och länk"
+        )
+        return
+
+    url = parts[1].strip()
+    task = parts[2].strip() if len(parts) > 2 else "Hämta all väsentlig information från sidan"
+    await _handle_scrape_build(update, url, task)
+
+
+async def feat_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """
+    /feat [url] <uppgiftsbeskrivning>
+    Exempel: /feat https://blocket.se Bygg en scraper för bilannonser
+             /feat Bygg ett verktyg som hämtar väderprognoser från SMHI
+    """
+    raw = (update.message.text or "").strip()
+    parts = raw.split(" ", 1)
+    if len(parts) < 2 or not parts[1].strip():
+        await update.message.reply_text(
+            "Användning: /feat [url] <uppgiftsbeskrivning>\n\n"
+            "Exempel:\n"
+            "  /feat https://blocket.se/bilar Bygg scraper för bilannonser\n"
+            "  /feat Bygg ett verktyg som kollar valutakurser\n\n"
+            "Agent-teamet (Micke + Zack + Johan) tar hand om resten:\n"
+            "  Micke → SPEC + TESTPLAN\n"
+            "  Zack  → kod + tester\n"
+            "  Johan → testkörning + buggar\n"
+            "  Micke → slutlig review (Approve/Changes Required)"
+        )
+        return
+
+    rest = parts[1].strip()
+    # Kolla om första ordet är en URL
+    url = _extract_url(rest)
+    if url:
+        task = rest[len(url):].strip() or rest
+    else:
+        task = rest
+
+    await _handle_feat(update, task=task, url=url)
 
 
 async def reset_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -552,6 +841,18 @@ async def on_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     session.setdefault("mode", LLM_MODE)
     session.setdefault("agent_engine", DEFAULT_AGENT_ENGINE)
 
+    # --- Agent Team: detektera "bygg en app/verktyg..." ---
+    if _is_feat_request(text):
+        detected_url = _extract_url(text)
+        await _handle_feat(update, task=text, url=detected_url)
+        return
+
+    # --- Scraper Factory: detektera "bygg scraper för <url>" ---
+    detected_url = _extract_url(text)
+    if detected_url and _is_scraper_build_request(text):
+        await _handle_scrape_build(update, detected_url, text)
+        return
+
     active_mode = session.get("mode")
     if active_mode == LLM_MODE and should_activate_agent_mode(text):
         await update.message.reply_text("Jag hämtar/beräknar detta.")
@@ -577,6 +878,8 @@ def main():
     app.add_handler(CommandHandler("llm", llm_cmd))
     app.add_handler(CommandHandler("tools", tools_cmd))
     app.add_handler(CommandHandler("run", run_cmd))
+    app.add_handler(CommandHandler("build", build_cmd))
+    app.add_handler(CommandHandler("feat", feat_cmd))
     app.add_handler(CommandHandler("reset", reset_cmd))
     app.add_handler(CommandHandler("vars", vars_cmd))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, on_message))

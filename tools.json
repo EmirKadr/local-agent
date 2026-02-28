@@ -29,5 +29,126 @@
       { "input": { "headless": true, "write_file": false } },
       { "input": { "headless": true, "write_file": true } }
     ]
+  },
+  {
+    "name": "web_inspector",
+    "description": "Hämtar HTML från en URL, analyserar sidans struktur (titlar, formulär, länkar, navigering m.m.) och returnerar en AI-genererad förklaring av hur sidan fungerar och vad som finns där.",
+    "entrypoint": "Tools/web_inspector.py",
+    "input_schema": {
+      "type": "object",
+      "properties": {
+        "url":        { "type": "string",  "description": "URL att inspektera, t.ex. https://www.blocket.se" },
+        "headless":   { "type": "boolean", "default": true,  "description": "Playwright headless-läge" },
+        "use_ai":     { "type": "boolean", "default": true,  "description": "Använd Claude för AI-analys av sidan" },
+        "write_file": { "type": "boolean", "default": false, "description": "Spara resultat som JSON-fil" }
+      },
+      "required": ["url"],
+      "additionalProperties": false
+    },
+    "output_schema": {
+      "type": "object",
+      "properties": {
+        "url":          { "type": "string" },
+        "fetched_at":   { "type": "string" },
+        "fetch_method": { "type": "string", "enum": ["requests", "playwright"] },
+        "structure": {
+          "type": "object",
+          "properties": {
+            "title":            { "type": "string" },
+            "meta":             { "type": "object" },
+            "headings":         { "type": "object" },
+            "navigation":       { "type": "array" },
+            "internal_links":   { "type": "array" },
+            "external_links":   { "type": "array" },
+            "forms":            { "type": "array" },
+            "images":           { "type": "array" },
+            "scripts_external": { "type": "array" },
+            "stylesheets":      { "type": "array" },
+            "main_text_sample": { "type": "array" },
+            "total_links":      { "type": "integer" },
+            "total_images":     { "type": "integer" },
+            "total_scripts":    { "type": "integer" },
+            "total_forms":      { "type": "integer" }
+          }
+        },
+        "ai_summary": { "type": ["string", "null"] },
+        "out_file":   { "type": ["string", "null"] }
+      },
+      "required": ["url", "fetched_at", "fetch_method", "structure"]
+    },
+    "examples": [
+      { "input": { "url": "https://www.blocket.se", "use_ai": true,  "write_file": false } },
+      { "input": { "url": "https://example.com",   "use_ai": false, "write_file": true  } }
+    ]
+  },
+  {
+    "name": "scraper_factory",
+    "description": "Multi-agent ramverk: CoderAgent bygger en Python-scraper för given URL och uppgift, ReviewerAgent kör och granskar koden, loopen upprepas tills koden godkänns eller max iterationer nåtts. Returnerar slutkod + fullständig logg.",
+    "entrypoint": "Tools/scraper_factory.py",
+    "input_schema": {
+      "type": "object",
+      "properties": {
+        "url":            { "type": "string",  "description": "URL att scrapa, t.ex. https://www.blocket.se" },
+        "task":           { "type": "string",  "description": "Vad ska hämtas, t.ex. 'alla bilannonser med pris och länk'" },
+        "max_iterations": { "type": "integer", "default": 3, "description": "Max antal byggrundor (default 3)" },
+        "write_file":     { "type": "boolean", "default": true, "description": "Spara slutkoden som .py-fil" }
+      },
+      "required": ["url", "task"],
+      "additionalProperties": false
+    },
+    "output_schema": {
+      "type": "object",
+      "properties": {
+        "url":        { "type": "string" },
+        "task":       { "type": "string" },
+        "status":     { "type": "string", "enum": ["approved", "max_iterations_reached", "error"] },
+        "iterations": { "type": "integer" },
+        "final_code": { "type": ["string", "null"] },
+        "final_score":{ "type": "integer" },
+        "log":        { "type": "array" },
+        "out_file":   { "type": ["string", "null"] }
+      },
+      "required": ["url", "task", "status", "iterations", "log"]
+    },
+    "examples": [
+      { "input": { "url": "https://www.blocket.se/bilar", "task": "hämta alla bilannonser med titel, pris och länk" } },
+      { "input": { "url": "https://www.hemnet.se",        "task": "hämta bostadsannonser med adress, pris och boyta", "max_iterations": 2 } }
+    ]
+  },
+  {
+    "name": "agent_team",
+    "description": "Tre permanenta sub-agenter för all app-byggande. Micke (Spec & QA Lead) skriver SPEC+TESTPLAN, Zack (Dev Lead) implementerar kod, Johan (QA) kör testplanen som svart låda. Loopen fortsätter tills Micke godkänner eller max_cycles nåtts. Ger tillgång till alla registrerade tools.",
+    "entrypoint": "Tools/agent_team.py",
+    "input_schema": {
+      "type": "object",
+      "properties": {
+        "task":       { "type": "string",  "description": "Uppgiftsbeskrivning, t.ex. 'Bygg en blocket-scraper som hämtar bilannonser'" },
+        "url":        { "type": "string",  "description": "Relevant URL (valfri)" },
+        "feat_id":    { "type": "string",  "description": "FEAT-ID, t.ex. FEAT-001 (skapas automatiskt om utelämnad)" },
+        "max_cycles": { "type": "integer", "default": 2, "description": "Max antal Micke→Zack→Johan-cyklar (default 2)" }
+      },
+      "required": ["task"],
+      "additionalProperties": false
+    },
+    "output_schema": {
+      "type": "object",
+      "properties": {
+        "feat_id":          { "type": "string" },
+        "task":             { "type": "string" },
+        "status":           { "type": "string", "enum": ["approved", "changes_required", "error"] },
+        "cycles":           { "type": "integer" },
+        "project_path":     { "type": "string" },
+        "artifacts":        { "type": "object", "description": "SPEC.md, TESTPLAN.md, TESTREPORT.md, RUNBOOK.md m.m." },
+        "src_files":        { "type": "object", "description": "Källkodsfiler (src/)" },
+        "bug_files":        { "type": "object", "description": "Buggrapporter (bugs/)" },
+        "required_changes": { "type": "array" },
+        "log":              { "type": "array" }
+      },
+      "required": ["feat_id", "task", "status", "cycles", "log"]
+    },
+    "examples": [
+      { "input": { "task": "Bygg en blocket-scraper för bilannonser", "url": "https://www.blocket.se/bilar" } },
+      { "input": { "task": "Skapa ett verktyg som hämtar väderprognoser från SMHI", "max_cycles": 3 } }
+    ]
   }
 ]
