@@ -129,11 +129,13 @@ def run_tool(entrypoint: str, input_data: dict[str, Any], timeout: int = TOOL_TI
 
     env = os.environ.copy()
     env["LOCAL_AGENT_TOOL_MODE"] = "1"
+    env["PYTHONIOENCODING"] = "utf-8"
 
     proc = subprocess.run(
         [sys.executable, str(tool_path)],
         input=json.dumps(input_data, ensure_ascii=False),
         text=True,
+        encoding="utf-8",
         capture_output=True,
         timeout=timeout,
         env=env,
