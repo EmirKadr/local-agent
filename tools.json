@@ -6,8 +6,10 @@
     "input_schema": {
       "type": "object",
       "properties": {
-        "headless": { "type": "boolean", "default": true },
-        "write_file": { "type": "boolean", "default": false }
+        "headless":         { "type": "boolean", "default": true },
+        "write_file":       { "type": "boolean", "default": false },
+        "url":              { "type": "string" },
+        "wanted_deadlines": { "type": "array", "items": { "type": "string" } }
       },
       "additionalProperties": false
     },
