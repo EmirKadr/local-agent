@@ -53,6 +53,20 @@ SCRAPE_BUILD_TRIGGERS = (
     "gå in på",
 )
 
+# --- Agent Team (Micke + Zack + Johan) ---
+FEAT_TRIGGERS = (
+    "bygg en app",
+    "bygg ett verktyg",
+    "skapa en app",
+    "skapa ett verktyg",
+    "implementera",
+    "utveckla",
+    "feat:",
+    "feature:",
+    "ny feature",
+    "ny funktion",
+)
+
 _URL_RE = re.compile(
     r"https?://[^\s\"'<>]+|"
     r"(?<!\w)(?:[a-zA-Z0-9-]+\.)+(?:se|com|org|net|io|dev|fi|no|dk|nu|app|ai)[^\s\"'<>]*"
@@ -434,8 +448,12 @@ def _autogen_available() -> bool:
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(
         "OK. Default-läge: vanlig LLM-chat.\n\n"
-        "SCRAPER-BYGGE:\n"
-        "• /build <url> [uppgift] – multi-agent scraper-bygge\n"
+        "AGENT-TEAM (Micke + Zack + Johan):\n"
+        "• /feat [url] <uppgift> – full SPEC→IMPL→TEST→REVIEW-loop\n"
+        "  Exempel: /feat blocket.se Bygg scraper för bilannonser\n"
+        "  Eller skriv: 'bygg en app som...' / 'implementera...'\n\n"
+        "SCRAPER-BYGGE (snabb, utan spec):\n"
+        "• /build <url> [uppgift] – CoderAgent + ReviewerAgent\n"
         "  Exempel: /build blocket.se/bilar hämta annonser med pris\n"
         "  Eller skriv: 'bygg scraper för blocket.se som hämtar...'\n\n"
         "AGENTLÄGE:\n"
@@ -538,6 +556,106 @@ async def run_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text(part)
 
 
+def _is_feat_request(text: str) -> bool:
+    """Returnerar True om meddelandet handlar om att bygga en ny feature/app (utan URL-krav)."""
+    t = (text or "").strip().lower()
+    return any(trigger in t for trigger in FEAT_TRIGGERS)
+
+
+def _format_feat_result(result: dict) -> str:
+    """Formaterar agent_team-resultatet för Telegram."""
+    verdict_sym = "✓" if result["status"] == "approved" else "~"
+    lines = [
+        f"[{verdict_sym}] Agent-team klart — {result['feat_id']}",
+        f"Status   : {result['status']}",
+        f"Cyklar   : {result['cycles']}",
+        f"Mapp     : {result['project_path']}",
+    ]
+
+    if result.get("required_changes"):
+        lines.append("\nRequired Changes:")
+        for c in result["required_changes"][:5]:
+            lines.append(f"  - {c}")
+
+    # Loggsummering: visa bara nyckel-händelser
+    KEY_EVENTS = {
+        "micke_spec_done", "zack_impl_done", "zack_question",
+        "micke_answer", "johan_test_done", "micke_review_done",
+        "step1_error", "step2_error", "step3_error", "step4_error",
+    }
+    log_lines = []
+    for entry in result.get("log", []):
+        if entry["event"] in KEY_EVENTS:
+            t = entry["time"][11:19]
+            ag = f"[{entry['agent']}] " if entry.get("agent") else ""
+            ev = entry["event"]
+            # Extra info per händelse
+            extras = []
+            if ev == "micke_spec_done":
+                extras.append(f"{entry.get('testcases', 0)} testfall")
+            elif ev == "zack_impl_done":
+                extras.append(f"{len(entry.get('files_written', []))} filer")
+            elif ev == "johan_test_done":
+                extras.append(f"{entry.get('passed', 0)} pass / {entry.get('failed', 0)+(entry.get('passed',0))} tot")
+                if entry.get("blockers"):
+                    extras.append(f"blockers: {entry['blockers']}")
+            elif ev == "micke_review_done":
+                extras.append(entry.get("verdict", ""))
+            elif ev == "zack_question":
+                extras.append(entry.get("unclear", "")[:60])
+            extra_str = "  ".join(extras)
+            log_lines.append(f"  [{t}] {ag}{ev}  {extra_str}")
+
+    if log_lines:
+        lines.append(f"\nLogg:")
+        lines.extend(log_lines)
+
+    return "\n".join(lines)
+
+
+async def _handle_feat(update: Update, task: str, url: str | None = None):
+    """Kör agent_team asynkront (Micke + Zack + Johan) och svarar i Telegram."""
+    msg = await update.message.reply_text(
+        f"Startar agent-team...\n"
+        f"Uppgift: {task[:200]}\n\n"
+        f"Micke skriver spec → Zack bygger → Johan testar → Micke reviewar.\n"
+        f"Det tar 3-8 minuter beroende på uppgiften."
+    )
+
+    sys.path.insert(0, str(_TOOLS_DIR))
+    import agent_team
+
+    # Progress-callback som skickar uppdateringar till Telegram
+    sent_steps: list[str] = []
+
+    def progress_cb(step_msg: str):
+        sent_steps.append(step_msg)
+
+    loop = asyncio.get_event_loop()
+    try:
+        result = await loop.run_in_executor(
+            None,
+            lambda: agent_team.run(task=task, url=url, max_cycles=2, progress_cb=progress_cb),
+        )
+    except Exception as e:
+        await update.message.reply_text(f"Fel vid agent-körning: {e}")
+        return
+
+    summary = _format_feat_result(result)
+    for part in split_telegram(summary):
+        await update.message.reply_text(part)
+
+    # Skicka main.py om den finns
+    src_main = result.get("src_files", {}).get("main.py", "")
+    if src_main:
+        code_msg = f"```python\n{src_main[:3800]}\n```"
+        try:
+            await update.message.reply_text(code_msg, parse_mode="Markdown")
+        except Exception:
+            for part in split_telegram(src_main):
+                await update.message.reply_text(part)
+
+
 async def build_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """
     /build <url> [task description]
@@ -555,6 +673,39 @@ async def build_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     url = parts[1].strip()
     task = parts[2].strip() if len(parts) > 2 else "Hämta all väsentlig information från sidan"
     await _handle_scrape_build(update, url, task)
+
+
+async def feat_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """
+    /feat [url] <uppgiftsbeskrivning>
+    Exempel: /feat https://blocket.se Bygg en scraper för bilannonser
+             /feat Bygg ett verktyg som hämtar väderprognoser från SMHI
+    """
+    raw = (update.message.text or "").strip()
+    parts = raw.split(" ", 1)
+    if len(parts) < 2 or not parts[1].strip():
+        await update.message.reply_text(
+            "Användning: /feat [url] <uppgiftsbeskrivning>\n\n"
+            "Exempel:\n"
+            "  /feat https://blocket.se/bilar Bygg scraper för bilannonser\n"
+            "  /feat Bygg ett verktyg som kollar valutakurser\n\n"
+            "Agent-teamet (Micke + Zack + Johan) tar hand om resten:\n"
+            "  Micke → SPEC + TESTPLAN\n"
+            "  Zack  → kod + tester\n"
+            "  Johan → testkörning + buggar\n"
+            "  Micke → slutlig review (Approve/Changes Required)"
+        )
+        return
+
+    rest = parts[1].strip()
+    # Kolla om första ordet är en URL
+    url = _extract_url(rest)
+    if url:
+        task = rest[len(url):].strip() or rest
+    else:
+        task = rest
+
+    await _handle_feat(update, task=task, url=url)
 
 
 async def reset_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -690,6 +841,12 @@ async def on_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     session.setdefault("mode", LLM_MODE)
     session.setdefault("agent_engine", DEFAULT_AGENT_ENGINE)
 
+    # --- Agent Team: detektera "bygg en app/verktyg..." ---
+    if _is_feat_request(text):
+        detected_url = _extract_url(text)
+        await _handle_feat(update, task=text, url=detected_url)
+        return
+
     # --- Scraper Factory: detektera "bygg scraper för <url>" ---
     detected_url = _extract_url(text)
     if detected_url and _is_scraper_build_request(text):
@@ -722,6 +879,7 @@ def main():
     app.add_handler(CommandHandler("tools", tools_cmd))
     app.add_handler(CommandHandler("run", run_cmd))
     app.add_handler(CommandHandler("build", build_cmd))
+    app.add_handler(CommandHandler("feat", feat_cmd))
     app.add_handler(CommandHandler("reset", reset_cmd))
     app.add_handler(CommandHandler("vars", vars_cmd))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, on_message))
