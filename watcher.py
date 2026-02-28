@@ -12,6 +12,7 @@ Körs via start.bat istället för att anropa bot.py direkt.
 import subprocess
 import sys
 import time
+from datetime import datetime
 
 CHECK_INTERVAL = 60  # sekunder mellan git-kontroller
 
@@ -54,7 +55,7 @@ def needs_restart(old_hash: str, new_hash: str) -> bool:
 
 def start_bot() -> subprocess.Popen:
     proc = subprocess.Popen([sys.executable, "bot.py"])
-    print(f"[watcher] Bot startad (PID {proc.pid})", flush=True)
+    print(f"[watcher] {datetime.now().strftime('%H:%M:%S')} Bot startad (PID {proc.pid})", flush=True)
     return proc
 
 
@@ -64,7 +65,7 @@ def stop_bot(proc: subprocess.Popen) -> None:
         proc.wait(timeout=10)
     except subprocess.TimeoutExpired:
         proc.kill()
-    print(f"[watcher] Bot stoppad (PID {proc.pid})", flush=True)
+    print(f"[watcher] {datetime.now().strftime('%H:%M:%S')} Bot stoppad (PID {proc.pid})", flush=True)
 
 
 def main() -> None:
@@ -75,7 +76,7 @@ def main() -> None:
 
         # Kolla om boten kraschade
         if proc.poll() is not None:
-            print(f"[watcher] Bot avslutades (kod {proc.returncode}) – startar om...", flush=True)
+            print(f"[watcher] {datetime.now().strftime('%H:%M:%S')} Bot avslutades (kod {proc.returncode}) – startar om...", flush=True)
             proc = start_bot()
             continue
 
@@ -87,7 +88,7 @@ def main() -> None:
         if loc == rem:
             continue
 
-        print(f"[watcher] Uppdatering hittad! {loc[:7]} → {rem[:7]}", flush=True)
+        print(f"[watcher] {datetime.now().strftime('%H:%M:%S')} Uppdatering hittad! {loc[:7]} → {rem[:7]}", flush=True)
         restart = needs_restart(loc, rem)
         git_pull()
 

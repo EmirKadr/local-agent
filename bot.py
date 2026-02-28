@@ -155,9 +155,246 @@ def _parse_kvd_input(text: str) -> dict:
             params.append(("gearbox", gear))
             break
 
+    # --- Sort ---
+    _KVD_SORT_OPTIONS: list[tuple[str, list]] = [
+        ("billigast",         [("orderBy", "price")]),
+        ("lägsta pris",       [("orderBy", "price")]),
+        ("dyrast",            [("orderBy", "price"), ("sortOrder", "desc")]),
+        ("högsta pris",       [("orderBy", "price"), ("sortOrder", "desc")]),
+        ("nyast år",          [("orderBy", "year"), ("sortOrder", "desc")]),
+        ("äldst år",          [("orderBy", "year")]),
+        ("minst mil",         [("orderBy", "mileage")]),
+        ("mest mil",          [("orderBy", "mileage"), ("sortOrder", "desc")]),
+        ("senast publicerad", [("orderBy", "published")]),
+        ("nyast publicerad",  [("orderBy", "published"), ("sortOrder", "desc")]),
+    ]
+    for kw, sort_params in _KVD_SORT_OPTIONS:
+        if kw in t:
+            params = [(k, v) for k, v in params if k not in ("orderBy", "sortOrder")]
+            params.extend(sort_params)
+            break
+
+    # --- Fri textsökning (modell, t.ex. "kvd v60" eller "kvd modell: xc90") ---
+    m_model = re.search(r'(?:modell|familyname)[: ]+([a-zA-Z0-9\-åäöÅÄÖ]+)', text.lower())
+    if m_model:
+        params.append(("familyName", m_model.group(1).strip()))
+
     # Skicka bara url om vi faktiskt har extra filter (mer än bara orderBy)
     if len(params) > 1:
         result["url"] = "https://www.kvd.se/begagnade-bilar?" + urlencode(params)
+
+    return result
+
+
+# ---------------------------------------------------------------------------
+# Blocket: naturlig-språk-parsning av filter
+# ---------------------------------------------------------------------------
+
+_BLOCKET_BRAND_CODES: dict[str, str] = {
+    "audi": "0.744", "bmw": "0.749", "citroen": "0.757", "citroën": "0.757",
+    "cupra": "0.8106", "dacia": "0.8079", "fiat": "0.766", "ford": "0.767",
+    "honda": "0.771", "hyundai": "0.772", "jaguar": "0.775", "jeep": "0.776",
+    "kia": "0.777", "land rover": "0.781", "lexus": "0.782", "mazda": "0.784",
+    "mercedes": "0.785", "mercedes-benz": "0.785", "mg": "0.786",
+    "mini": "0.7147", "mitsubishi": "0.787", "nissan": "0.792",
+    "opel": "0.795", "peugeot": "0.796", "polestar": "0.8102",
+    "porsche": "0.801", "renault": "0.804", "saab": "0.806",
+    "seat": "0.807", "skoda": "0.808", "subaru": "0.810",
+    "suzuki": "0.811", "tesla": "0.8078", "toyota": "0.813",
+    "volkswagen": "0.817", "vw": "0.817", "volvo": "0.818",
+}
+
+_BLOCKET_FUEL_MAP: list[tuple[str, str]] = [
+    ("hybrid diesel", "8"),
+    ("hybrid bensin", "6"),
+    ("hybrid gas",    "5"),
+    ("elbil",         "4"),
+    ("elektrisk",     "4"),
+    (" el ",          "4"),
+    ("diesel",        "2"),
+    ("bensin",        "1"),
+    ("hybrid",        "6"),
+    ("gas",           "3"),
+]
+
+_BLOCKET_GEAR_MAP: list[tuple[str, str]] = [
+    ("manuell",    "1"),
+    ("automat",    "2"),
+    ("automatisk", "2"),
+]
+
+_BLOCKET_SORT_MAP: list[tuple[str, str]] = [
+    ("billigast",         "price"),
+    ("lägsta pris",       "price"),
+    ("dyrast",            "price_desc"),
+    ("högsta pris",       "price_desc"),
+    ("nyast år",          "year_desc"),
+    ("nyast modell",      "year_desc"),
+    ("äldst år",          "year"),
+    ("nyast publicerad",  "date"),
+    ("senast publicerad", "date"),
+    ("minst mil",         "mileage"),
+    ("lägst mil",         "mileage"),
+    ("mest mil",          "mileage_desc"),
+]
+
+_BLOCKET_BODY_MAP: list[tuple[str, str]] = [
+    ("halvkombi", "2"),
+    ("cabriolet", "7"),
+    ("pickup",    "8"),
+    ("skåpbil",   "10"),
+    ("kombi",     "4"),
+    ("sedan",     "3"),
+    ("coupé",     "6"),
+    ("coupe",     "6"),
+    ("suv",       "9"),
+    ("cab",       "7"),
+    ("van",       "10"),
+]
+
+# KVD-värden → Blocket-koder
+_KVD_FUEL_TO_BLOCKET: dict[str, str] = {
+    "bensin":    "1",
+    "diesel":    "2",
+    "gas":       "3",
+    "el":        "4",
+    "hybrid":    "6",
+}
+_KVD_GEAR_TO_BLOCKET: dict[str, str] = {
+    "manuell": "1",
+    "automat": "2",
+}
+
+
+def _last_kvd_items(session: dict | None) -> list:
+    """Hämtar sparade KVD-objekt från session för filter-arv."""
+    if not session:
+        return []
+    return (session.get("vars") or {}).get("last_kvd_items") or []
+
+
+def _parse_blocket_input(text: str, session: dict | None = None) -> dict:
+    """Parsar naturlig-språk-filter från ett Blocket-meddelande.
+
+    Stöder märke, drivmedel, växellåda, kaross, sort, fri text/modell,
+    pris-/årsintervall, miltal – och "samma X" för att ärva filter
+    från det senaste KVD-resultatet.
+    """
+    from urllib.parse import urlencode
+
+    t = " " + text.lower() + " "
+    result: dict = {}
+    params: list[tuple[str, str]] = []
+
+    ref = (_last_kvd_items(session) or [{}])[0]
+
+    # --- "Samma X" – ärv filter från senaste KVD-resultat ---
+    if "samma bränsle" in t or "samma drivmedel" in t or "samma fuel" in t:
+        raw = (ref.get("fuel") or "").lower()
+        for kw, code in _KVD_FUEL_TO_BLOCKET.items():
+            if kw in raw:
+                params.append(("fuel_type", code))
+                break
+
+    if "samma märke" in t or "samma bilmärke" in t:
+        make = (ref.get("make") or "").lower()
+        code = _BLOCKET_BRAND_CODES.get(make)
+        if code:
+            params.append(("variant", code))
+
+    if "samma modell" in t or "samma bil" in t:
+        make  = (ref.get("make")  or "").strip()
+        model = (ref.get("model") or "").strip()
+        q_str = f"{make} {model}".strip()
+        if q_str:
+            params.append(("q", q_str.replace(" ", "+")))
+
+    if "samma växellåda" in t or "samma gear" in t:
+        raw = (ref.get("gearbox") or "").lower()
+        for kw, code in _KVD_GEAR_TO_BLOCKET.items():
+            if kw in raw:
+                params.append(("gearbox", code))
+                break
+
+    if "samma år" in t or "samma årsmodell" in t:
+        yr = (ref.get("year") or "").strip()
+        if yr and yr.isdigit():
+            params.append(("year_from", yr))
+            params.append(("year_to", yr))
+
+    # --- Drivmedel (om inte ärvt) ---
+    if not any(k == "fuel_type" for k, _ in params):
+        for kw, code in _BLOCKET_FUEL_MAP:
+            if kw in t:
+                params.append(("fuel_type", code))
+                break
+
+    # --- Märke (om inte ärvt) ---
+    if not any(k == "variant" for k, _ in params):
+        for brand, code in _BLOCKET_BRAND_CODES.items():
+            if f" {brand} " in t:
+                params.append(("variant", code))
+
+    # --- Växellåda (om inte ärvt) ---
+    if not any(k == "gearbox" for k, _ in params):
+        for kw, code in _BLOCKET_GEAR_MAP:
+            if kw in t:
+                params.append(("gearbox", code))
+                break
+
+    # --- Karosstyp ---
+    for kw, code in _BLOCKET_BODY_MAP:
+        if f" {kw} " in t:
+            params.append(("body_type", code))
+            break
+
+    # --- Sort ---
+    sort_added = False
+    for kw, sort_val in _BLOCKET_SORT_MAP:
+        if kw in t:
+            params.append(("sort", sort_val))
+            sort_added = True
+            break
+    if not sort_added:
+        params.append(("sort", "price"))
+
+    # --- Fri textsökning/modell (om inte ärvt) ---
+    if not any(k == "q" for k, _ in params):
+        m = re.search(r'(?:modell|sök(?:ord)?)[: ]+([a-zA-Z0-9 \-åäöÅÄÖ]+)', text.lower())
+        if m:
+            q_val = m.group(1).strip()
+            if q_val:
+                params.append(("q", q_val.replace(" ", "+")))
+
+    # --- Pris ---
+    m = re.search(r'max\s*pris[: ]*(\d[\d\s]*)\s*(?:kr)?', t)
+    if m:
+        params.append(("price_to", m.group(1).replace(" ", "")))
+    m = re.search(r'min\s*pris[: ]*(\d[\d\s]*)\s*(?:kr)?', t)
+    if m:
+        params.append(("price_from", m.group(1).replace(" ", "")))
+
+    # --- Årsmodell ---
+    if not any(k in ("year_from", "year_to") for k, _ in params):
+        m = re.search(r'fr[åa]n\s+(\d{4})', t)
+        if m:
+            params.append(("year_from", m.group(1)))
+        m = re.search(r'till\s+(\d{4})', t)
+        if m:
+            params.append(("year_to", m.group(1)))
+
+    # --- Miltal ---
+    m = re.search(r'(?:max|upp\s+till|under)\s+(\d[\d\s]*)\s+mil', t)
+    if m:
+        params.append(("mileage_to", m.group(1).replace(" ", "")))
+
+    # --- Antal annonser ---
+    m = re.search(r'(?:visa|hämta|ta\s+fram|lista)\s+(\d+)\s+(?:annonser?|bilar?|objekt)', t)
+    if m:
+        result["target"] = int(m.group(1))
+
+    if params:
+        result["url"] = "https://www.blocket.se/mobility/search/car?" + urlencode(params)
 
     return result
 
@@ -382,23 +619,33 @@ async def _handle_direct_fetch(update: Update, tool_name: str, tool_input: dict)
         await update.message.reply_text(f"Hämtar data med {tool_name}...")
     run_result = execute_tool(tool_name, tool_input)
     if not isinstance(run_result, dict) or not run_result.get("ok"):
-        err = (run_result or {}).get("error", {})
-        await update.message.reply_text(f"Fel: {err.get('message', str(run_result))[:500]}")
-        return
+        err_info = (run_result or {}).get("error", {})
+        await update.message.reply_text(f"Fel: {err_info.get('message', str(run_result))[:500]}")
+        return None
 
     result = run_result.get("result", {})
     items  = result.get("items", [])
     source = result.get("source", tool_name)
     lines  = [f"{len(items)} objekt från {source} ({result.get('run_at', '')[:16]}):"]
-    for item in items[:15]:
-        title = item.get("title") or item.get("name") or "?"
+    for item in items:
         price = item.get("price_str") or item.get("leading_bid") or item.get("price") or "–"
         url   = item.get("url") or item.get("link") or ""
-        lines.append(f"\n• {title}  |  {price}")
+        # Visa specs: år · bränsle · växellåda · miltal (istället för titel)
+        spec_parts = [
+            item.get("year"),
+            item.get("fuel"),
+            item.get("gearbox"),
+            item.get("mileage"),
+        ]
+        spec = " · ".join(p for p in spec_parts if p)
+        if not spec:
+            spec = item.get("title") or item.get("name") or "?"
+        lines.append(f"\n• {spec}  |  {price}")
         if url:
             lines.append(f"  {url}")
     for part in split_telegram("\n".join(lines)):
         await update.message.reply_text(part)
+    return result
 
 
 def should_activate_agent_mode(text: str) -> bool:
@@ -1001,12 +1248,19 @@ async def on_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     # --- Direkta fetch: kör befintliga verktyg direkt (ingen agent_team behövs) ---
     if _is_direct_kvd_fetch(text):
-        await _handle_direct_fetch(update, "kvd_scraper", _parse_kvd_input(text))
+        fetch_result = await _handle_direct_fetch(update, "kvd_scraper", _parse_kvd_input(text))
+        if isinstance(fetch_result, dict) and fetch_result.get("items"):
+            session.setdefault("vars", {})["last_kvd_items"] = fetch_result["items"][:20]
+            save_session(chat_id, session)
         return
 
     if _is_direct_blocket_fetch(text):
-        blocket_url = _extract_url(text) or "https://www.blocket.se/bilar?sort=price_ascending"
-        await _handle_direct_fetch(update, "blocket_scraper", {"url": blocket_url})
+        blocket_input = _parse_blocket_input(text, session)
+        if not blocket_input.get("url") and not blocket_input.get("target"):
+            explicit_url = _extract_url(text)
+            if explicit_url:
+                blocket_input["url"] = explicit_url
+        await _handle_direct_fetch(update, "blocket_scraper", blocket_input)
         return
 
     # --- Agent Team: detektera "bygg en app/verktyg..." ---
