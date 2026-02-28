@@ -49,60 +49,67 @@ CODE_RUN_TIMEOUT  = 30       # sekunder per testkörning
 # --------------------------------------------------------------------------- #
 
 TOOLS_INFO = f"""
-Tillgängliga tools – ANVÄND dessa istället för att bygga från scratch:
+# Tillgängliga tools
+
+## BYGG-TOOLS – för att skapa ny funktionalitet
 
 ━━━ web_inspector ━━━
-Hämtar HTML från en URL och returnerar AI-analys + sidstruktur (titlar, länkar, formulär).
+Analyserar en webbsidas HTML-struktur. Används för att FÖRSTÅ en sida innan man bygger mot den.
 
-  # Direkt import (rekommenderat):
   import sys; sys.path.insert(0, r"{_TOOLS_DIR}")
   import web_inspector
   result = web_inspector.run(url="https://example.com")
   # result["ai_summary"]  – AI-beskrivning av sidan
-  # result["structure"]   – dict med headings, links, forms, scripts m.m.
-
-  # Via runner.py (subprocess):
-  import json, subprocess, sys
-  req = {{"tool": "web_inspector", "input": {{"url": "https://example.com"}}}}
-  proc = subprocess.run([sys.executable, r"{_TOOLS_DIR}/runner.py"],
-                        input=json.dumps(req), capture_output=True, text=True, timeout=60)
-  result = json.loads(proc.stdout)["result"]
+  # result["structure"]   – headings, links, forms, scripts m.m.
 
 ━━━ scraper_factory ━━━
-Bygger automatiskt en komplett Python-scraper (CoderAgent + ReviewerAgent-loop).
-Returnerar färdig, granskad scraper-kod + resultatet från testkörning.
+Bygger en ny Python-scraper automatiskt (CoderAgent + ReviewerAgent-loop).
+Används NÄR det inte redan finns ett färdigt datahämtningsverktyg.
 
-  # Direkt import (rekommenderat):
   import sys; sys.path.insert(0, r"{_TOOLS_DIR}")
   import scraper_factory
-  result = scraper_factory.run(
-      url="https://www.blocket.se/bilar",
-      task="Hämta alla bilannonser med titel, pris och länk",
-  )
+  result = scraper_factory.run(url="https://example.com", task="Hämta alla X med pris och länk")
   # result["status"]      – "approved" | "max_iterations_reached" | "error"
-  # result["final_code"]  – färdig Python-scraper-kod som sträng
-  # result["out_file"]    – sökväg till sparad .py-fil (om write_file=True)
+  # result["final_code"]  – färdig Python-kod som sträng
+  # result["out_file"]    – sökväg till sparad .py-fil
 
-  # Via runner.py (subprocess):
-  req = {{"tool": "scraper_factory", "input": {{"url": "https://...", "task": "Hämta..."}}}}
+## DATAHÄMTNINGS-TOOLS – färdiga, kör direkt
+
+━━━ blocket_scraper ━━━
+Hämtar bilannonser från Blocket. Finns redan – behöver INTE byggas om.
+
+  import json, subprocess, sys
+  req = {{"tool": "blocket_scraper", "input": {{"url": "https://www.blocket.se/bilar?sort=price_ascending", "target": 15}}}}
   proc = subprocess.run([sys.executable, r"{_TOOLS_DIR}/runner.py"],
                         input=json.dumps(req), capture_output=True, text=True, timeout=120)
   result = json.loads(proc.stdout)["result"]
+  # result["items"] – lista med title, price_str, url, mileage m.m.
 
 ━━━ kvd_scraper ━━━
-Hämtar KVD-auktionslistningar (idag/ikväll/imorgon).
+Hämtar KVD-auktionslistningar. Finns redan – behöver INTE byggas om.
 
-  import sys; sys.path.insert(0, r"{_TOOLS_DIR}")
-  import kvd_scraper14
-  result = kvd_scraper14.run()
+  req = {{"tool": "kvd_scraper", "input": {{}}}}
+  proc = subprocess.run([sys.executable, r"{_TOOLS_DIR}/runner.py"],
+                        input=json.dumps(req), capture_output=True, text=True, timeout=120)
+  result = json.loads(proc.stdout)["result"]
+  # result["items"] – lista med title, leading_bid, deadline_text, url m.m.
+
+## DELADE TOOLS – används för båda ändamål
 
 ━━━ runner.py ━━━
-Generell dispatcher – kör vilken registrerad tool som helst via JSON på stdin.
+Kör vilken registrerad tool som helst via JSON på stdin.
 
   req = {{"tool": "<tool_name>", "input": {{...}}}}
   proc = subprocess.run([sys.executable, r"{_TOOLS_DIR}/runner.py"],
                         input=json.dumps(req), capture_output=True, text=True)
   out = json.loads(proc.stdout)  # {{"ok": true, "result": {{...}}}} eller {{"ok": false, "error": {{...}}}}
+
+━━━ git_push ━━━
+Committar och pushar färdig kod till main. Kör detta när implementationen är klar.
+
+  req = {{"tool": "git_push", "input": {{"message": "Agent: beskrivning av vad som byggts"}}}}
+  proc = subprocess.run([sys.executable, r"{_TOOLS_DIR}/runner.py"],
+                        input=json.dumps(req), capture_output=True, text=True)
 """
 
 

@@ -204,8 +204,8 @@
       "required": ["feat_id", "task", "status", "cycles", "log"]
     },
     "examples": [
-      { "input": { "task": "Bygg en blocket-scraper för bilannonser", "url": "https://www.blocket.se/bilar" } },
-      { "input": { "task": "Skapa ett verktyg som hämtar väderprognoser från SMHI", "max_cycles": 3 } }
+      { "input": { "task": "Skapa ett verktyg som hämtar väderprognoser från SMHI", "max_cycles": 3 } },
+      { "input": { "task": "Bygg en prisbevakningstjänst som jämför bilannonser från flera källor" } }
     ]
   }
 ]
