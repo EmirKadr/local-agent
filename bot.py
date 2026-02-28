@@ -460,6 +460,162 @@ AGENT_TRIGGER_WORDS = (
 )
 
 
+# ---------------------------------------------------------------------------
+# Per-objekt Blocket-sökning: "kolla blocket för varje annons"
+# ---------------------------------------------------------------------------
+
+_PER_ITEM_TRIGGERS = (
+    "för varje annons", "för varje bil", "för varje objekt", "för varje kvd",
+    "per annons", "per bil", "varje annons", "kollar blocket för varje",
+    "sök blocket för varje", "blocket för varje",
+)
+
+
+def _is_per_item_blocket_lookup(text: str) -> bool:
+    t = text.lower()
+    return any(tr in t for tr in _PER_ITEM_TRIGGERS)
+
+
+def _mileage_to_int(mileage_str: str) -> int | None:
+    """Konverterar '18 661 mil' → 18661."""
+    digits = re.sub(r"\D", "", mileage_str or "")
+    return int(digits) if digits else None
+
+
+async def _per_item_blocket_lookup(
+    update, text: str, session: dict
+) -> None:
+    """Kör en Blocket-sökning per sparad KVD-annons med ärvda + delta-filter."""
+    from urllib.parse import urlencode
+
+    kvd_items = _last_kvd_items(session)
+    if not kvd_items:
+        await update.message.reply_text(
+            "Inga sparade KVD-resultat att utgå från. Hämta KVD-auktioner först."
+        )
+        return
+
+    t = " " + text.lower() + " "
+
+    # --- Delta-filter ---
+    price_from: str | None = None
+    m = re.search(r"minsta?\s*pris\s*:?\s*(\d[\d\s]*)\s*(?:kr)?", t)
+    if m:
+        price_from = m.group(1).replace(" ", "")
+
+    mileage_delta = 0
+    m = re.search(r"(\d[\d\s]*)\s*mil\s+mindre", t)
+    if m:
+        mileage_delta = -int(m.group(1).replace(" ", ""))
+
+    year_delta = 0
+    if "ett år mindre" in t:
+        year_delta = -1
+    else:
+        m = re.search(r"(\d+)\s*år\s+mindre", t)
+        if m:
+            year_delta = -int(m.group(1))
+
+    # --- Vilka fält ska ärvas? ---
+    inherit_make   = "märke"    in t or "make"  in t
+    inherit_model  = "modell"   in t or "model" in t
+    inherit_fuel   = "bränsle"  in t or "drivmedel" in t or "fuel" in t
+    inherit_gear   = "växellåda" in t or "gear"  in t
+    inherit_mil    = "miltal"   in t or " mil " in t
+    inherit_year   = "år"       in t or "årsmodell" in t
+
+    n = len(kvd_items)
+    await update.message.reply_text(
+        f"Söker Blocket för {n} KVD-annons(er)..."
+    )
+
+    loop = asyncio.get_event_loop()
+    found_any = False
+
+    for i, item in enumerate(kvd_items, 1):
+        title    = item.get("title") or "?"
+        make     = (item.get("make")    or "").lower().strip()
+        model    = (item.get("model")   or "").strip()
+        fuel_raw = (item.get("fuel")    or "").lower()
+        gear_raw = (item.get("gearbox") or "").lower()
+        year_raw = (item.get("year")    or "").strip()
+        mil_raw  = item.get("mileage")  or ""
+
+        params: list[tuple[str, str]] = [("sort", "price")]
+
+        if inherit_make and make:
+            code = _BLOCKET_BRAND_CODES.get(make)
+            if code:
+                params.append(("variant", code))
+
+        if inherit_model and (make or model):
+            q_str = f"{make} {model}".strip()
+            if q_str:
+                params.append(("q", q_str.replace(" ", "+")))
+
+        if inherit_fuel:
+            for kw, code in _KVD_FUEL_TO_BLOCKET.items():
+                if kw in fuel_raw:
+                    params.append(("fuel_type", code))
+                    break
+
+        if inherit_gear:
+            for kw, code in _KVD_GEAR_TO_BLOCKET.items():
+                if kw in gear_raw:
+                    params.append(("gearbox", code))
+                    break
+
+        if price_from:
+            params.append(("price_from", price_from))
+
+        if inherit_mil and mileage_delta != 0 and mil_raw:
+            mil_int = _mileage_to_int(mil_raw)
+            if mil_int:
+                max_mil = mil_int + mileage_delta
+                if max_mil > 0:
+                    params.append(("mileage_to", str(max_mil)))
+
+        if inherit_year and year_delta != 0 and year_raw.isdigit():
+            params.append(("year_from", str(int(year_raw) + year_delta)))
+
+        url = "https://www.blocket.se/mobility/search/car?" + urlencode(params)
+
+        await update.message.reply_text(f"[{i}/{n}] {title}...")
+
+        run_result = await loop.run_in_executor(
+            None, lambda u=url: execute_tool("blocket_scraper", {"url": u, "target": 5})
+        )
+
+        if not isinstance(run_result, dict) or not run_result.get("ok"):
+            err_info = (run_result or {}).get("error", {})
+            await update.message.reply_text(
+                f"  Fel: {err_info.get('message', str(run_result))[:200]}"
+            )
+            continue
+
+        b_items = run_result.get("result", {}).get("items", [])
+        if not b_items:
+            await update.message.reply_text(f"  Inga matchningar på Blocket.")
+            continue
+
+        found_any = True
+        lines = [f"Blocket – {title}:"]
+        for b in b_items:
+            price = b.get("price") or "–"
+            b_url = b.get("url") or ""
+            spec_parts = [b.get("year"), b.get("fuel"), b.get("gearbox"), b.get("mileage")]
+            spec = ", ".join(p for p in spec_parts if p)
+            label = f"{b.get('title') or title}, {spec}".strip(", ")
+            lines.append(f"\n• {label}  |  {price}")
+            if b_url:
+                lines.append(f"  {b_url}")
+        for part in split_telegram("\n".join(lines)):
+            await update.message.reply_text(part)
+
+    if not found_any:
+        await update.message.reply_text("Inga Blocket-matchningar hittades.")
+
+
 def _normalize_engine(engine: str) -> str:
     value = (engine or "").strip().lower()
     return value if value in AGENT_ENGINES else ""
@@ -1252,6 +1408,10 @@ async def on_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
         if isinstance(fetch_result, dict) and fetch_result.get("items"):
             session.setdefault("vars", {})["last_kvd_items"] = fetch_result["items"][:20]
             save_session(chat_id, session)
+        return
+
+    if _is_per_item_blocket_lookup(text):
+        await _per_item_blocket_lookup(update, text, session)
         return
 
     if _is_direct_blocket_fetch(text):
