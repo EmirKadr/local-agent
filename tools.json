@@ -32,7 +32,7 @@
   },
   {
     "name": "web_inspector",
-    "description": "Hämtar HTML från en URL, analyserar sidans struktur (titlar, formulär, länkar, navigering m.m.) och returnerar en AI-genererad förklaring av hur sidan fungerar och vad som finns där.",
+    "description": "Hämtar HTML från en URL, analyserar sidans struktur (titlar, formulär, länkar, navigering m.m.), fångar live XHR/fetch API-anrop via Playwright nätverksinterceptering, skannar JavaScript efter API-URL-mönster, och returnerar en AI-genererad förklaring. Detekterade API-endpoints kan sedan användas direkt av scraper_factory.",
     "entrypoint": "Tools/web_inspector.py",
     "input_schema": {
       "type": "object",
@@ -71,10 +71,36 @@
             "total_forms":      { "type": "integer" }
           }
         },
+        "api_calls": {
+          "type": "array",
+          "description": "Live-fångade XHR/fetch-anrop via Playwright nätverksinterceptering",
+          "items": {
+            "type": "object",
+            "properties": {
+              "method":           { "type": "string", "description": "HTTP-metod, t.ex. GET eller POST" },
+              "url":              { "type": "string", "description": "Endpoint-URL" },
+              "resource_type":    { "type": "string", "enum": ["xhr", "fetch"] },
+              "post_data":        { "type": ["string", "null"], "description": "Request body om POST" },
+              "response_preview": { "type": "string", "description": "Första 2000 tecken av JSON-svar" }
+            }
+          }
+        },
+        "api_patterns": {
+          "type": "array",
+          "description": "API-URL-mönster extraherade via statisk JS-analys (fetch(), axios, REST-paths)",
+          "items": {
+            "type": "object",
+            "properties": {
+              "source": { "type": "string", "description": "fetch() | axios | js_pattern" },
+              "url":    { "type": "string", "description": "Hittad URL eller path" },
+              "method": { "type": "string", "description": "HTTP-metod om känd" }
+            }
+          }
+        },
         "ai_summary": { "type": ["string", "null"] },
         "out_file":   { "type": ["string", "null"] }
       },
-      "required": ["url", "fetched_at", "fetch_method", "structure"]
+      "required": ["url", "fetched_at", "fetch_method", "structure", "api_calls", "api_patterns"]
     },
     "examples": [
       { "input": { "url": "https://www.blocket.se", "use_ai": true,  "write_file": false } },
