@@ -33,6 +33,23 @@ AGENT_ENGINES = {"local", "autogen"}
 AFFIRMATIVE_WORDS = {"ja", "japp", "yes", "ok", "okej", "kör", "go", "retry", "igen"}
 NEGATIVE_WORDS = {"nej", "no", "stop", "avbryt", "cancel"}
 
+CANCEL_WORDS = {"avbryt", "avbryta", "stoppa", "stop", "cancel", "stanna", "halt"}
+
+# Per-chat avbrytningsflaggor – sätts av användaren, kollas av pågående jobb
+_cancel_flags: dict[int, bool] = {}
+
+
+def _request_cancel(chat_id: int) -> None:
+    _cancel_flags[chat_id] = True
+
+
+def _clear_cancel(chat_id: int) -> None:
+    _cancel_flags.pop(chat_id, None)
+
+
+def _is_cancelled(chat_id: int) -> bool:
+    return bool(_cancel_flags.get(chat_id))
+
 # --- Scraper Factory ---
 _TOOLS_DIR = Path(__file__).parent / "Tools"
 # --- Direkta fetch-anrop: kör befintliga verktyg utan agent_team/scraper_factory ---
@@ -524,15 +541,23 @@ async def _per_item_blocket_lookup(
     inherit_mil    = "miltal"   in t or " mil " in t
     inherit_year   = "år"       in t or "årsmodell" in t
 
+    chat_id = update.effective_chat.id
+    _clear_cancel(chat_id)
+
     n = len(kvd_items)
     await update.message.reply_text(
-        f"Söker Blocket för {n} KVD-annons(er)..."
+        f"Söker Blocket för {n} KVD-annons(er)... (skriv 'avbryt' för att stoppa)"
     )
 
     loop = asyncio.get_event_loop()
     found_any = False
 
     for i, item in enumerate(kvd_items, 1):
+        if _is_cancelled(chat_id):
+            _clear_cancel(chat_id)
+            await update.message.reply_text("Avbrutet.")
+            return
+
         title    = item.get("title") or "?"
         make     = (item.get("make")    or "").lower().strip()
         model    = (item.get("model")   or "").strip()
@@ -969,12 +994,16 @@ def call_runner(payload: dict) -> dict:
             "error": {"type": "runner_missing", "message": f"runner.py hittades inte: {RUNNER_PATH}"},
         }
 
+    env = os.environ.copy()
+    env["PYTHONIOENCODING"] = "utf-8"
     proc = subprocess.run(
         [sys.executable, str(RUNNER_PATH)],
         input=json.dumps(payload, ensure_ascii=False),
         text=True,
+        encoding="utf-8",
         capture_output=True,
         timeout=240,
+        env=env,
     )
 
     if proc.stdout.strip():
@@ -1269,6 +1298,11 @@ async def feat_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await _handle_feat(update, task=task, url=url)
 
 
+async def avbryt_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    _request_cancel(update.effective_chat.id)
+    await update.message.reply_text("Avbrytningssignal skickad – avslutar efter pågående steg.")
+
+
 async def reset_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     reset_session(update.effective_chat.id)
     await update.message.reply_text("Session reset.")
@@ -1402,8 +1436,15 @@ async def on_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     session.setdefault("mode", LLM_MODE)
     session.setdefault("agent_engine", DEFAULT_AGENT_ENGINE)
 
+    # --- Avbryt pågående jobb ---
+    if text.strip().lower() in CANCEL_WORDS:
+        _request_cancel(chat_id)
+        await update.message.reply_text("Avbrytningssignal skickad – avslutar efter pågående steg.")
+        return
+
     # --- Direkta fetch: kör befintliga verktyg direkt (ingen agent_team behövs) ---
     if _is_direct_kvd_fetch(text):
+        _clear_cancel(chat_id)
         fetch_result = await _handle_direct_fetch(update, "kvd_scraper", _parse_kvd_input(text))
         if isinstance(fetch_result, dict) and fetch_result.get("items"):
             session.setdefault("vars", {})["last_kvd_items"] = fetch_result["items"][:20]
@@ -1462,6 +1503,7 @@ def main():
     app.add_handler(CommandHandler("run", run_cmd))
     app.add_handler(CommandHandler("build", build_cmd))
     app.add_handler(CommandHandler("feat", feat_cmd))
+    app.add_handler(CommandHandler("avbryt", avbryt_cmd))
     app.add_handler(CommandHandler("reset", reset_cmd))
     app.add_handler(CommandHandler("vars", vars_cmd))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, on_message))
