@@ -3,6 +3,7 @@
     "name": "kvd_scraper",
     "description": "Scrapar KVD-listningar (idag/ikväll/imorgon) och hämtar detaljer per annons.",
     "entrypoint": "Tools/kvd_scraper14.py",
+    "timeout_seconds": 300,
     "input_schema": {
       "type": "object",
       "properties": {

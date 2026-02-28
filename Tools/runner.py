@@ -15,7 +15,7 @@ except Exception:  # optional fallback
 
 TOOLS_DIR = Path(__file__).resolve().parent
 REGISTRY_PATH = Path(os.environ.get("TOOLS_JSON_PATH", str(TOOLS_DIR.parent / "tools.json")))
-TOOL_TIMEOUT_SECONDS = int(os.environ.get("TOOL_TIMEOUT_SECONDS", "60"))
+TOOL_TIMEOUT_SECONDS = int(os.environ.get("TOOL_TIMEOUT_SECONDS", "120"))
 MAX_STDOUT_CHARS = int(os.environ.get("TOOL_MAX_STDOUT_CHARS", "200000"))
 
 
@@ -118,7 +118,7 @@ def _extract_last_json(stdout_text: str) -> dict[str, Any]:
     raise ValueError(f"Could not extract JSON from stdout. Last error: {last_err}. Stdout sample: {sample}")
 
 
-def run_tool(entrypoint: str, input_data: dict[str, Any]) -> dict[str, Any]:
+def run_tool(entrypoint: str, input_data: dict[str, Any], timeout: int = TOOL_TIMEOUT_SECONDS) -> dict[str, Any]:
     tool_path = Path(entrypoint)
     if not tool_path.is_absolute():
         tool_path = TOOLS_DIR.parent / tool_path
@@ -135,7 +135,7 @@ def run_tool(entrypoint: str, input_data: dict[str, Any]) -> dict[str, Any]:
         input=json.dumps(input_data, ensure_ascii=False),
         text=True,
         capture_output=True,
-        timeout=TOOL_TIMEOUT_SECONDS,
+        timeout=timeout,
         env=env,
     )
 
@@ -194,10 +194,11 @@ def main() -> int:
             sys.stdout.write(json.dumps(out, ensure_ascii=False))
             return 0
 
+        tool_timeout = int(spec.get("timeout_seconds") or TOOL_TIMEOUT_SECONDS)
         try:
-            result = run_tool(entrypoint, input_data)
+            result = run_tool(entrypoint, input_data, timeout=tool_timeout)
         except subprocess.TimeoutExpired:
-            out = err(tool_name, "timeout", f"Tool exceeded timeout of {TOOL_TIMEOUT_SECONDS}s")
+            out = err(tool_name, "timeout", f"Tool exceeded timeout of {tool_timeout}s")
             sys.stdout.write(json.dumps(out, ensure_ascii=False))
             return 0
         except Exception as e:
