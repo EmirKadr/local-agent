@@ -198,7 +198,7 @@ def parse_structure(html: str, base_url: str) -> dict:
 def _lm_chat(messages: list[dict], max_tokens: int = 2048) -> str:
     """Anropar lokal LLM via OpenAI-kompatibelt API."""
     lm_base  = os.environ.get("OPENAI_API_BASE", "http://127.0.0.1:1234/v1")
-    lm_model = os.environ.get("LM_MODEL", "qwen/qwen3-vl-8b")
+    lm_model = os.environ.get("LM_MODEL", "meta-llama/llama-3.3-70b-instruct")
     resp = requests.post(
         f"{lm_base}/chat/completions",
         json={"model": lm_model, "messages": messages, "max_tokens": max_tokens, "temperature": 0.2},

@@ -15,7 +15,7 @@ from session_store import load_session, reset_session, save_session, session_sum
 
 # --- LM Studio ---
 LM_STUDIO_BASE = os.environ.get("OPENAI_API_BASE", "http://127.0.0.1:1234/v1")
-MODEL_ID = os.environ.get("LM_MODEL", "qwen/qwen3-vl-8b")
+MODEL_ID = os.environ.get("LM_MODEL", "meta-llama/llama-3.3-70b-instruct")
 
 # --- Local runner/tooling ---
 RUNNER_PATH = Path(os.environ.get("RUNNER_PATH", r"C:\local-agent\Tools\runner.py"))

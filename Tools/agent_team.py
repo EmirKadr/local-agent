@@ -230,7 +230,7 @@ def _log(log: list, event: str, agent: str = "", **kw) -> None:
 def _call_claude(system: str, user_msg: str, max_tokens: int = 6144) -> str:
     """Anropar lokal LLM via OpenAI-kompatibelt API."""
     lm_base  = os.environ.get("OPENAI_API_BASE", "http://127.0.0.1:1234/v1")
-    lm_model = os.environ.get("LM_MODEL", "qwen/qwen3-vl-8b")
+    lm_model = os.environ.get("LM_MODEL", "meta-llama/llama-3.3-70b-instruct")
     resp = requests.post(
         f"{lm_base}/chat/completions",
         json={
