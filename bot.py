@@ -994,12 +994,16 @@ def call_runner(payload: dict) -> dict:
             "error": {"type": "runner_missing", "message": f"runner.py hittades inte: {RUNNER_PATH}"},
         }
 
+    env = os.environ.copy()
+    env["PYTHONIOENCODING"] = "utf-8"
     proc = subprocess.run(
         [sys.executable, str(RUNNER_PATH)],
         input=json.dumps(payload, ensure_ascii=False),
         text=True,
+        encoding="utf-8",
         capture_output=True,
         timeout=240,
+        env=env,
     )
 
     if proc.stdout.strip():
