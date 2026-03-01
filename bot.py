@@ -72,6 +72,9 @@ DIRECT_BLOCKET_TRIGGERS = (
 
 def _is_direct_kvd_fetch(text: str) -> bool:
     t = text.lower()
+    # Blocket har alltid prioritet – om "blocket" nämns i meddelandet, gå INTE till KVD
+    if any(tr in t for tr in DIRECT_BLOCKET_TRIGGERS):
+        return False
     return any(tr in t for tr in DIRECT_KVD_TRIGGERS) and not any(v in t for v in _BUILD_VERBS)
 
 def _is_direct_blocket_fetch(text: str) -> bool:
@@ -1043,6 +1046,8 @@ def plan_next_action(*, user_text: str, tools: list[dict], session: dict) -> dic
         "- VIKTIGT: Kalla ALDRIG samma tool två gånger i rad om observationen redan visar ok=true.\n"
         "- VIKTIGT: scraper_factory är för att BYGGA nya scrapers (returnerar kod). "
         "För att HÄMTA bilannonser från Blocket, använd blocket_scraper.\n"
+        "- VIKTIGT: kvd_scraper hämtar KVD-auktioner. blocket_scraper hämtar Blocket-annonser. "
+        "Välj ALDRIG kvd_scraper om user nämner 'blocket'. Välj ALDRIG blocket_scraper om user nämner 'kvd' (utan blocket).\n"
     )
 
     user_payload = {
