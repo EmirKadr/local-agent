@@ -961,6 +961,14 @@ def summarize_observation(obj: dict, max_items: int = 10) -> dict:
         for k in ("out_file", "run_at", "source", "query_url"):
             if k in result:
                 summary[k] = result[k]
+        # scraper_factory-resultat: visa status + kodpreview så planern förstår
+        if "status" in result and "final_code" in result:
+            summary["status"] = result.get("status")
+            summary["iterations"] = result.get("iterations")
+            summary["score"] = result.get("final_score")
+            code = result.get("final_code") or ""
+            if code:
+                summary["final_code_preview"] = code[:600]
         if not summary:
             keys = list(result.keys())[:20]
             summary["keys"] = keys
@@ -1033,6 +1041,9 @@ def plan_next_action(*, user_text: str, tools: list[dict], session: dict) -> dic
         "- Om uppgiften är klar: action=final.\n"
         "- Svara ENDAST JSON, ingen markdown/text runtom.\n"
         "- Om user uttryckligen säger kör/run/start för ett känt verktyg, returnera action=run direkt.\n"
+        "- VIKTIGT: Kalla ALDRIG samma tool två gånger i rad om observationen redan visar ok=true.\n"
+        "- VIKTIGT: scraper_factory är för att BYGGA nya scrapers (returnerar kod). "
+        "För att HÄMTA bilannonser från Blocket, använd blocket_scraper.\n"
     )
 
     user_payload = {
@@ -1080,6 +1091,17 @@ def plan_next_action(*, user_text: str, tools: list[dict], session: dict) -> dic
     return {"action": "ask", "question": f"Planner JSON-fel: {last_error}. Kan du omformulera uppgiften?", "choices": []}
 
 
+def _tool_timeout(tool_name: str, default: int = 240) -> int:
+    """Hämtar timeout_seconds för ett tool från tools.json, med fallback."""
+    try:
+        for t in list_tools_from_json():
+            if t.get("name") == tool_name:
+                return int(t.get("timeout_seconds") or default) + 30  # +30s overhead
+    except Exception:
+        pass
+    return default
+
+
 def call_runner(payload: dict) -> dict:
     if not RUNNER_PATH.exists():
         return {
@@ -1087,6 +1109,8 @@ def call_runner(payload: dict) -> dict:
             "tool": payload.get("tool"),
             "error": {"type": "runner_missing", "message": f"runner.py hittades inte: {RUNNER_PATH}"},
         }
+
+    timeout = _tool_timeout(payload.get("tool", ""), default=240)
 
     env = os.environ.copy()
     env["PYTHONIOENCODING"] = "utf-8"
@@ -1096,7 +1120,7 @@ def call_runner(payload: dict) -> dict:
         text=True,
         encoding="utf-8",
         capture_output=True,
-        timeout=240,
+        timeout=timeout,
         env=env,
     )
 
