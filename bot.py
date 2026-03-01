@@ -4,7 +4,6 @@ import os
 import re
 import subprocess
 import sys
-from importlib.util import find_spec
 from pathlib import Path
 
 import requests
@@ -28,7 +27,7 @@ CHAT_HISTORY_LIMIT = int(os.environ.get("CHAT_HISTORY_LIMIT", "12"))
 AGENT_MODE = "agent"
 LLM_MODE = "llm"
 DEFAULT_AGENT_ENGINE = os.environ.get("DEFAULT_AGENT_ENGINE", "local").strip().lower() or "local"
-AGENT_ENGINES = {"local", "autogen"}
+AGENT_ENGINES = {"local"}
 
 AFFIRMATIVE_WORDS = {"ja", "japp", "yes", "ok", "okej", "kör", "go", "retry", "igen"}
 NEGATIVE_WORDS = {"nej", "no", "stop", "avbryt", "cancel"}
@@ -1156,10 +1155,6 @@ def _history_to_chat_messages(session: dict) -> list[dict]:
     return out
 
 
-def _autogen_available() -> bool:
-    return find_spec("autogen_agentchat") is not None and find_spec("autogen_ext") is not None
-
-
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(
         "OK. Default-läge: vanlig LLM-chat.\n\n"
@@ -1175,7 +1170,7 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "• /agent => växla till agentläge\n"
         "• /llm => växla tillbaka till vanlig LLM\n"
         "• /mode visar nuvarande läge\n"
-        "• /engine [local|autogen] visar/sätter agent-engine\n"
+        "• /engine visar agent-engine\n"
         "• /run {JSON} kör valfritt registry-tool via runner\n"
         "• /tools listar tools från tools.json\n"
         "• /vars visar session-vars\n"
@@ -1206,12 +1201,6 @@ async def engine_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
             f"Ogiltig engine. Använd: {', '.join(sorted(AGENT_ENGINES))}"
         )
         return
-
-    if requested == "autogen" and not _autogen_available():
-        await update.message.reply_text(
-            "autogen-engine vald men paket saknas i miljön.\n"
-            "Installera autogen-agentchat + autogen-ext eller kör /engine local."
-        )
 
     session["agent_engine"] = requested
     save_session(chat_id, session)
@@ -1441,19 +1430,6 @@ async def _handle_llm_mode(update: Update, text: str, session: dict):
         await update.message.reply_text(part)
 
 
-async def _handle_autogen_mode(update: Update, text: str, session: dict) -> bool:
-    if not _autogen_available():
-        await update.message.reply_text(
-            "Autogen-engine är vald men paketen saknas. Faller tillbaka till local-engine för detta meddelande."
-        )
-        return False
-
-    await update.message.reply_text(
-        "Autogen-engine är förberedd men ännu inte implementerad i detalj. Faller tillbaka till local-engine."
-    )
-    return False
-
-
 async def _handle_local_agent_mode(update: Update, text: str, session: dict):
     chat_id = update.effective_chat.id
     session["history"].append({"role": "user", "content": text})
@@ -1534,11 +1510,6 @@ async def _handle_agent_mode(update: Update, text: str, session: dict):
         await update.message.reply_text("Okej, då stannar vi här.")
         return
 
-    engine = _effective_engine(session)
-    if engine == "autogen":
-        handled = await _handle_autogen_mode(update, text, session)
-        if handled:
-            return
     await _handle_local_agent_mode(update, text, session)
 
 
